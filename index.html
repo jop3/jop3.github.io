@@ -195,24 +195,35 @@ let baseX = 0;
 
 function generateTerrain() {
   terrain = new Float32Array(WORLD_W);
+  const groundBase = canvas.height * 0.75;
   // Multi-octave noise for hilly terrain
-  const groundBase = canvas.height * 0.7;
   for (let x = 0; x < WORLD_W; x++) {
     let h = 0;
-    h += Math.sin(x * 0.002) * 80;
-    h += Math.sin(x * 0.005 + 1.3) * 40;
-    h += Math.sin(x * 0.01 + 2.7) * 20;
-    h += Math.sin(x * 0.025 + 0.5) * 10;
+    h += Math.sin(x * 0.002) * 60;
+    h += Math.sin(x * 0.005 + 1.3) * 30;
+    h += Math.sin(x * 0.01 + 2.7) * 15;
+    h += Math.sin(x * 0.025 + 0.5) * 8;
     terrain[x] = groundBase + h;
   }
-  // Flatten around base
-  baseX = 100;
-  for (let x = baseX - 20; x < baseX + BASE_WIDTH + 20; x++) {
-    if (x >= 0 && x < WORLD_W) {
-      const flatH = groundBase + Math.sin(baseX * 0.002) * 80 + Math.sin(baseX * 0.005 + 1.3) * 40;
-      const dist = Math.max(0, Math.abs(x - (baseX + BASE_WIDTH / 2)) - BASE_WIDTH / 2);
-      const blend = Math.min(1, dist / 20);
-      terrain[x] = terrain[x] * blend + flatH * (1 - blend);
+  // Place base in a flat valley area with long clear zone
+  baseX = 200;
+  const baseCenter = baseX + BASE_WIDTH / 2;
+  const flatY = groundBase; // flat at the baseline (no sine offsets)
+  // Flatten a wide area: 150px before base, runway, and 400px after for takeoff clearance
+  const flatStart = baseX - 150;
+  const flatEnd = baseX + BASE_WIDTH + 400;
+  for (let x = Math.max(0, flatStart - 80); x < Math.min(WORLD_W, flatEnd + 80); x++) {
+    if (x >= flatStart && x <= flatEnd) {
+      // Fully flat
+      terrain[x] = flatY;
+    } else if (x < flatStart) {
+      // Blend in from left
+      const t = (flatStart - x) / 80;
+      terrain[x] = flatY * (1 - t) + terrain[x] * t;
+    } else {
+      // Blend out to right
+      const t = (x - flatEnd) / 80;
+      terrain[x] = flatY * (1 - t) + terrain[x] * t;
     }
   }
 }
@@ -261,7 +272,7 @@ function spawnBuildings() {
   buildings = [];
   const types = ['hangar', 'factory', 'flak'];
   const minGap = 300;
-  let lastX = baseX + BASE_WIDTH + 200;
+  let lastX = baseX + BASE_WIDTH + 600;
   const count = 8 + level * 3;
   for (let i = 0; i < count; i++) {
     const bx = lastX + minGap + Math.random() * 400;
@@ -474,6 +485,10 @@ function update(dt) {
         state = ST.GAME_OVER;
       } else {
         initPlayer();
+        player.invincible = 3; // 3 seconds of invincibility after respawn
+        // Clear hostile projectiles near spawn
+        bullets = bullets.filter(b => b.friendly);
+        flakShots = [];
         state = ST.PLAYING;
       }
     }
@@ -756,8 +771,8 @@ function updatePlayer(dt) {
       p.landed = false;
       p.stalled = false;
       p.accel = PLANE_MAX_ACCEL;
-      p.speed = PLANE_MIN_SPEED + 2;  // Enough to fly
-      p.angleIdx = 15; // Slightly nose-up (15 = -1 step from level = slight climb)
+      p.speed = PLANE_MAX_SPEED - 1;  // Strong takeoff speed
+      p.angleIdx = 14; // Nose up — climb quickly away from ground
     }
     p.y = getTerrainY(p.x) - 8;
   }
@@ -907,13 +922,26 @@ function updateEnemies(dt) {
   for (const en of enemies) {
     if (!en.alive) continue;
 
-    // Simple chase AI
-    const dx = player.x - en.x;
-    const dy = player.y - en.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    const desiredAngle = Math.atan2(dy, dx);
+    // Don't chase player if they are invincible (just respawned) or landed at base
+    const playerSafe = player.invincible > 0 || player.landed;
 
-    // Adjust angle toward player
+    let dx, dy, dist, desiredAngle;
+    if (playerSafe) {
+      // Patrol: fly away from base, circle in the world
+      const patrolX = 3000 + ((en.x * 7) % 5000);
+      const patrolY = 150;
+      dx = patrolX - en.x;
+      dy = patrolY - en.y;
+      dist = Math.sqrt(dx * dx + dy * dy);
+      desiredAngle = Math.atan2(dy, dx);
+    } else {
+      dx = player.x - en.x;
+      dy = player.y - en.y;
+      dist = Math.sqrt(dx * dx + dy * dy);
+      desiredAngle = Math.atan2(dy, dx);
+    }
+
+    // Adjust angle toward target
     let angleDiff = desiredAngle - en.angle;
     while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
     while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
@@ -934,9 +962,9 @@ function updateEnemies(dt) {
     if (en.x < 0) en.x += WORLD_W;
     if (en.x >= WORLD_W) en.x -= WORLD_W;
 
-    // Fire at player
+    // Fire at player (only when not safe)
     en.fireTimer--;
-    if (en.fireTimer <= 0 && dist < 600) {
+    if (en.fireTimer <= 0 && dist < 600 && !playerSafe) {
       const bvx = Math.cos(en.angle) * BULLET_SPEED * 0.7;
       const bvy = Math.sin(en.angle) * BULLET_SPEED * 0.7;
       bullets.push({ x: en.x + Math.cos(en.angle) * 20, y: en.y + Math.sin(en.angle) * 20, vx: bvx, vy: bvy, life: 1.0, friendly: false });
