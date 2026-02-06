@@ -26,20 +26,22 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0f;font-family:
 .ammo-bar{width:50px;height:8px;background:#112;border:1px solid #335;border-radius:2px;overflow:hidden;display:inline-block;vertical-align:middle}
 .ammo-fill{height:100%;background:linear-gradient(90deg,#ff0,#fa0);transition:width 0.2s}
 /* ── Touch controls ── */
-#touch-controls{display:none;position:absolute;bottom:42px;left:0;right:0;pointer-events:none;z-index:10;padding:0 8px 6px}
-.touch-row{display:flex;justify-content:space-between;align-items:center;pointer-events:none}
-.touch-btn{pointer-events:auto;width:56px;height:56px;border-radius:50%;border:2px solid rgba(0,255,255,0.4);background:rgba(0,20,40,0.5);color:#0ff;font:bold 13px 'Courier New',monospace;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;text-shadow:0 0 6px #0ff}
+#touch-zone{display:none;position:absolute;inset:0;z-index:5;touch-action:none}
+#touch-actions{display:none;position:absolute;right:8px;bottom:50px;z-index:10;pointer-events:none;flex-direction:column;gap:8px}
+.touch-btn{pointer-events:auto;width:52px;height:52px;border-radius:50%;border:2px solid rgba(0,255,255,0.35);background:rgba(0,20,40,0.45);color:#0ff;font:bold 12px 'Courier New',monospace;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;text-shadow:0 0 6px #0ff}
 .touch-btn:active,.touch-btn.held{background:rgba(0,255,255,0.25);border-color:#0ff}
-.touch-btn.fire{border-color:rgba(255,100,100,0.5);color:#f66;text-shadow:0 0 6px #f66;width:64px;height:64px}
+.touch-btn.fire{border-color:rgba(255,100,100,0.4);color:#f66;text-shadow:0 0 6px #f66;width:58px;height:58px}
 .touch-btn.fire:active,.touch-btn.fire.held{background:rgba(255,50,50,0.25);border-color:#f66}
-.touch-btn.bomb{border-color:rgba(255,160,0,0.5);color:#fa0;text-shadow:0 0 6px #fa0}
+.touch-btn.bomb{border-color:rgba(255,160,0,0.4);color:#fa0;text-shadow:0 0 6px #fa0}
 .touch-btn.bomb:active,.touch-btn.bomb.held{background:rgba(255,160,0,0.25);border-color:#fa0}
-.touch-side{display:flex;flex-direction:column;gap:6px;align-items:center}
-.touch-mid{display:flex;gap:10px;align-items:center}
 #touch-start{display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:20;pointer-events:auto;padding:18px 36px;border-radius:12px;border:2px solid #0ff;background:rgba(0,20,40,0.8);color:#0ff;font:bold 20px 'Courier New',monospace;text-shadow:0 0 10px #0ff;touch-action:none;user-select:none;-webkit-user-select:none}
+#touch-pitch-indicator{display:none;position:absolute;left:12px;top:50%;transform:translateY(-50%);width:4px;height:80px;background:rgba(0,255,255,0.15);border-radius:2px;z-index:10;pointer-events:none}
+#touch-pitch-dot{position:absolute;left:-4px;width:12px;height:12px;border-radius:50%;background:#0ff;box-shadow:0 0 8px #0ff;top:50%;transform:translateY(-50%);transition:top 0.05s}
 @media (hover:none) and (pointer:coarse){
-  #touch-controls{display:flex !important}
+  #touch-zone{display:block !important}
+  #touch-actions{display:flex !important}
   #touch-start{display:block !important}
+  #touch-pitch-indicator{display:block !important}
 }
 </style>
 </head>
@@ -48,24 +50,18 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0f;font-family:
   <canvas id="radar"></canvas>
   <div id="game">
     <canvas id="c"></canvas>
-    <!-- Touch start button (mobile only) -->
+    <!-- Touch: full-screen gesture zone (hold=throttle, drag=pitch) -->
+    <div id="touch-zone"></div>
+    <!-- Touch: start/retry button -->
     <div id="touch-start">TAP TO START</div>
-    <!-- Touch controls overlay (mobile only) -->
-    <div id="touch-controls">
-      <div class="touch-row">
-        <div class="touch-side">
-          <div class="touch-btn" data-key="ArrowUp">UP</div>
-          <div class="touch-btn" data-key="ArrowDown">DN</div>
-        </div>
-        <div class="touch-mid">
-          <div class="touch-btn fire" data-key="Space">FIRE</div>
-          <div class="touch-btn bomb" data-key="KeyB">BOM</div>
-        </div>
-        <div class="touch-side">
-          <div class="touch-btn" data-key="Period">FLIP</div>
-          <div class="touch-btn" data-key="KeyH">HOME</div>
-        </div>
-      </div>
+    <!-- Touch: pitch indicator -->
+    <div id="touch-pitch-indicator"><div id="touch-pitch-dot"></div></div>
+    <!-- Touch: action buttons (right side) -->
+    <div id="touch-actions">
+      <div class="touch-btn fire" data-key="Space">FIRE</div>
+      <div class="touch-btn bomb" data-key="KeyB">BOMB</div>
+      <div class="touch-btn" data-key="Period">FLIP</div>
+      <div class="touch-btn" data-key="KeyH">HOME</div>
     </div>
   </div>
   <div id="hud">
@@ -149,26 +145,93 @@ window.addEventListener('keydown', e => { keys[e.code] = true; if(['Space','Arro
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
 // ── Touch controls ──
+// Hold anywhere = throttle (KeyX + ArrowUp), drag up/down = pitch
+// Right-side buttons for fire, bomb, flip, home
 const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-
-// Touch start button
 const touchStartBtn = document.getElementById('touch-start');
+const touchZone = document.getElementById('touch-zone');
+const pitchDot = document.getElementById('touch-pitch-dot');
+let touchThrottleId = null;  // track the main gesture touch
+let touchStartY = 0;         // Y where the touch began
+let touchCurrentY = 0;
+const PITCH_DEADZONE = 12;   // pixels before pitch kicks in
+const PITCH_RANGE = 60;      // pixels for full up/down
+
+// Start/retry button
 if (touchStartBtn) {
   touchStartBtn.addEventListener('touchstart', (e) => {
     e.preventDefault();
     keys['Enter'] = true;
     setTimeout(() => { keys['Enter'] = false; }, 100);
     touchStartBtn.style.display = 'none';
+    initAudio();
   });
 }
 
-// Touch control buttons — map to keys
+// Main touch zone — hold for throttle, drag for pitch
+if (touchZone) {
+  touchZone.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    initAudio();
+    if (touchThrottleId !== null) return; // already tracking
+    const t = e.changedTouches[0];
+    touchThrottleId = t.identifier;
+    touchStartY = t.clientY;
+    touchCurrentY = t.clientY;
+    // Throttle on (KeyX only — ArrowUp would also pitch up)
+    keys['KeyX'] = true;
+  });
+
+  touchZone.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      if (t.identifier === touchThrottleId) {
+        touchCurrentY = t.clientY;
+        const dy = touchStartY - touchCurrentY; // positive = dragged up
+
+        // Clear previous pitch keys
+        keys['Comma'] = false;
+        keys['Slash'] = false;
+
+        if (dy > PITCH_DEADZONE) {
+          // Dragged up → nose up
+          keys['Comma'] = true;
+        } else if (dy < -PITCH_DEADZONE) {
+          // Dragged down → nose down
+          keys['Slash'] = true;
+        }
+
+        // Update pitch indicator dot
+        if (pitchDot) {
+          const norm = Math.max(-1, Math.min(1, dy / PITCH_RANGE));
+          pitchDot.style.top = (50 - norm * 40) + '%';
+        }
+      }
+    }
+  });
+
+  const endTouch = (e) => {
+    for (const t of e.changedTouches) {
+      if (t.identifier === touchThrottleId) {
+        touchThrottleId = null;
+        keys['KeyX'] = false;
+        keys['Comma'] = false;
+        keys['Slash'] = false;
+        if (pitchDot) pitchDot.style.top = '50%';
+      }
+    }
+  };
+  touchZone.addEventListener('touchend', endTouch);
+  touchZone.addEventListener('touchcancel', endTouch);
+}
+
+// Action buttons (fire, bomb, flip, home)
 document.querySelectorAll('.touch-btn').forEach(btn => {
   const keyCode = btn.dataset.key;
   if (!keyCode) return;
-
   btn.addEventListener('touchstart', (e) => {
     e.preventDefault();
+    e.stopPropagation();
     keys[keyCode] = true;
     btn.classList.add('held');
     initAudio();
