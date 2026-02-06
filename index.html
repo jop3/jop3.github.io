@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>jop3.github.io</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #0a0a0f;
+      --text: #e0e0e8;
+      --accent: #6c63ff;
+      --accent2: #00d4aa;
+      --accent3: #ff6b6b;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      overflow-x: hidden;
+      min-height: 100vh;
+    }
+
+    /* ── Particle canvas ── */
+    #particles {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+    }
+
+    /* ── Main content ── */
+    .content {
+      position: relative;
+      z-index: 1;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 4rem 2rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3rem;
+    }
+
+    /* ── Hero ── */
+    .hero {
+      text-align: center;
+      animation: fadeUp 1s ease-out;
+    }
+
+    .hero h1 {
+      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--accent), var(--accent2), var(--accent3));
+      background-size: 200% 200%;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: gradientShift 4s ease infinite;
+      line-height: 1.1;
+    }
+
+    .hero .subtitle {
+      margin-top: 1rem;
+      font-size: 1.2rem;
+      color: #888;
+      font-weight: 300;
+    }
+
+    .hero .tagline {
+      margin-top: 0.5rem;
+      font-size: 0.95rem;
+      color: #555;
+      font-family: 'Courier New', monospace;
+    }
+
+    /* ── Terminal card ── */
+    .terminal {
+      width: 100%;
+      max-width: 700px;
+      background: #12121a;
+      border: 1px solid #2a2a3a;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(108, 99, 255, 0.1);
+      animation: fadeUp 1s ease-out 0.2s both;
+    }
+
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: #1a1a28;
+      border-bottom: 1px solid #2a2a3a;
+    }
+
+    .terminal-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+
+    .terminal-dot:nth-child(1) { background: #ff5f56; }
+    .terminal-dot:nth-child(2) { background: #ffbd2e; }
+    .terminal-dot:nth-child(3) { background: #27c93f; }
+
+    .terminal-title {
+      flex: 1;
+      text-align: center;
+      font-size: 0.8rem;
+      color: #555;
+    }
+
+    .terminal-body {
+      padding: 1.5rem;
+      font-family: 'Courier New', Consolas, monospace;
+      font-size: 0.9rem;
+      line-height: 1.8;
+      min-height: 200px;
+    }
+
+    .prompt { color: var(--accent2); }
+    .command { color: var(--text); }
+    .output { color: #888; }
+    .highlight { color: var(--accent); }
+    .cursor {
+      display: inline-block;
+      width: 8px;
+      height: 1.1em;
+      background: var(--accent2);
+      vertical-align: text-bottom;
+      animation: blink 1s step-end infinite;
+    }
+
+    /* ── Skills grid ── */
+    .skills-section {
+      width: 100%;
+      animation: fadeUp 1s ease-out 0.4s both;
+    }
+
+    .skills-section h2 {
+      text-align: center;
+      font-size: 1.5rem;
+      margin-bottom: 1.5rem;
+      color: var(--accent2);
+    }
+
+    .skills-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 1rem;
+    }
+
+    .skill-card {
+      background: #12121a;
+      border: 1px solid #2a2a3a;
+      border-radius: 10px;
+      padding: 1.2rem;
+      text-align: center;
+      transition: all 0.3s ease;
+      cursor: default;
+    }
+
+    .skill-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-4px);
+      box-shadow: 0 8px 30px rgba(108, 99, 255, 0.15);
+    }
+
+    .skill-icon {
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .skill-name {
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+
+    .skill-bar {
+      margin-top: 0.6rem;
+      height: 4px;
+      background: #2a2a3a;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .skill-bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      width: 0%;
+      transition: width 1.5s ease-out;
+    }
+
+    /* ── Conway's Game of Life ── */
+    .game-section {
+      width: 100%;
+      text-align: center;
+      animation: fadeUp 1s ease-out 0.6s both;
+    }
+
+    .game-section h2 {
+      font-size: 1.5rem;
+      margin-bottom: 0.5rem;
+      color: var(--accent3);
+    }
+
+    .game-section p {
+      color: #555;
+      font-size: 0.9rem;
+      margin-bottom: 1rem;
+    }
+
+    #game-of-life {
+      border: 1px solid #2a2a3a;
+      border-radius: 8px;
+      cursor: crosshair;
+      image-rendering: pixelated;
+      width: 100%;
+      max-width: 500px;
+    }
+
+    .game-controls {
+      display: flex;
+      justify-content: center;
+      gap: 0.8rem;
+      margin-top: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .game-btn {
+      background: #1a1a28;
+      border: 1px solid #2a2a3a;
+      color: var(--text);
+      padding: 0.5rem 1.2rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: all 0.2s;
+    }
+
+    .game-btn:hover {
+      border-color: var(--accent3);
+      background: #22222f;
+    }
+
+    .game-btn.active {
+      border-color: var(--accent2);
+      background: rgba(0, 212, 170, 0.1);
+    }
+
+    /* ── Sorting visualizer ── */
+    .sort-section {
+      width: 100%;
+      text-align: center;
+      animation: fadeUp 1s ease-out 0.8s both;
+    }
+
+    .sort-section h2 {
+      font-size: 1.5rem;
+      margin-bottom: 0.5rem;
+      color: var(--accent);
+    }
+
+    .sort-section p {
+      color: #555;
+      font-size: 0.9rem;
+      margin-bottom: 1rem;
+    }
+
+    #sort-canvas {
+      border: 1px solid #2a2a3a;
+      border-radius: 8px;
+      width: 100%;
+      max-width: 600px;
+    }
+
+    .sort-controls {
+      display: flex;
+      justify-content: center;
+      gap: 0.8rem;
+      margin-top: 1rem;
+      flex-wrap: wrap;
+    }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      color: #333;
+      font-size: 0.8rem;
+      padding: 2rem;
+      animation: fadeUp 1s ease-out 1s both;
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    /* ── Animations ── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes gradientShift {
+      0%, 100% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+    }
+
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="particles"></canvas>
+
+  <div class="content">
+    <!-- Hero -->
+    <div class="hero">
+      <h1>Built by Claude</h1>
+      <p class="subtitle">A landing page crafted entirely by AI &mdash; code, design, and interactivity</p>
+      <p class="tagline">// proving that prompts can produce pixels</p>
+    </div>
+
+    <!-- Terminal -->
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="terminal-dot"></div>
+        <div class="terminal-dot"></div>
+        <div class="terminal-dot"></div>
+        <span class="terminal-title">claude-code &mdash; bash</span>
+      </div>
+      <div class="terminal-body" id="terminal-output"></div>
+    </div>
+
+    <!-- Skills -->
+    <div class="skills-section">
+      <h2>&lt;capabilities /&gt;</h2>
+      <div class="skills-grid">
+        <div class="skill-card">
+          <div class="skill-icon">&#x2728;</div>
+          <div class="skill-name">HTML / CSS</div>
+          <div class="skill-bar"><div class="skill-bar-fill" data-width="95"></div></div>
+        </div>
+        <div class="skill-card">
+          <div class="skill-icon">&#x26A1;</div>
+          <div class="skill-name">JavaScript</div>
+          <div class="skill-bar"><div class="skill-bar-fill" data-width="92"></div></div>
+        </div>
+        <div class="skill-card">
+          <div class="skill-icon">&#x1F9E9;</div>
+          <div class="skill-name">Algorithms</div>
+          <div class="skill-bar"><div class="skill-bar-fill" data-width="90"></div></div>
+        </div>
+        <div class="skill-card">
+          <div class="skill-icon">&#x1F3A8;</div>
+          <div class="skill-name">Generative Art</div>
+          <div class="skill-bar"><div class="skill-bar-fill" data-width="85"></div></div>
+        </div>
+        <div class="skill-card">
+          <div class="skill-icon">&#x1F50D;</div>
+          <div class="skill-name">Debugging</div>
+          <div class="skill-bar"><div class="skill-bar-fill" data-width="94"></div></div>
+        </div>
+        <div class="skill-card">
+          <div class="skill-icon">&#x1F680;</div>
+          <div class="skill-name">DevOps</div>
+          <div class="skill-bar"><div class="skill-bar-fill" data-width="80"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Game of Life -->
+    <div class="game-section">
+      <h2>Conway's Game of Life</h2>
+      <p>Click to draw cells, then hit play. Life finds a way.</p>
+      <canvas id="game-of-life" width="500" height="500"></canvas>
+      <div class="game-controls">
+        <button class="game-btn" id="gol-play">Play</button>
+        <button class="game-btn" id="gol-step">Step</button>
+        <button class="game-btn" id="gol-random">Random</button>
+        <button class="game-btn" id="gol-clear">Clear</button>
+      </div>
+    </div>
+
+    <!-- Sorting Visualizer -->
+    <div class="sort-section">
+      <h2>Sorting Visualizer</h2>
+      <p>Watch algorithms think, one swap at a time.</p>
+      <canvas id="sort-canvas" width="600" height="300"></canvas>
+      <div class="sort-controls">
+        <button class="game-btn" id="sort-bubble">Bubble Sort</button>
+        <button class="game-btn" id="sort-quick">Quick Sort</button>
+        <button class="game-btn" id="sort-merge">Merge Sort</button>
+        <button class="game-btn" id="sort-shuffle">Shuffle</button>
+      </div>
+    </div>
+
+    <footer>
+      Made with curiosity by <a href="https://github.com/jop3">jop3</a> &times; Claude &mdash; 2026
+    </footer>
+  </div>
+
+<script>
+// ═══════════════════════════════════════
+//  Particle background
+// ═══════════════════════════════════════
+(() => {
+  const c = document.getElementById('particles');
+  const ctx = c.getContext('2d');
+  let w, h, particles = [];
+  const PARTICLE_COUNT = 80;
+  const MAX_DIST = 140;
+
+  function resize() {
+    w = c.width = window.innerWidth;
+    h = c.height = window.innerHeight;
+  }
+
+  function init() {
+    resize();
+    particles = [];
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      particles.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * 0.5,
+        vy: (Math.random() - 0.5) * 0.5,
+        r: Math.random() * 2 + 1
+      });
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, w, h);
+
+    // connections
+    for (let i = 0; i < particles.length; i++) {
+      for (let j = i + 1; j < particles.length; j++) {
+        const dx = particles[i].x - particles[j].x;
+        const dy = particles[i].y - particles[j].y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < MAX_DIST) {
+          const alpha = (1 - dist / MAX_DIST) * 0.15;
+          ctx.strokeStyle = `rgba(108, 99, 255, ${alpha})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(particles[i].x, particles[i].y);
+          ctx.lineTo(particles[j].x, particles[j].y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // particles
+    for (const p of particles) {
+      ctx.fillStyle = 'rgba(108, 99, 255, 0.4)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      p.x += p.vx;
+      p.y += p.vy;
+      if (p.x < 0 || p.x > w) p.vx *= -1;
+      if (p.y < 0 || p.y > h) p.vy *= -1;
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', resize);
+  init();
+  draw();
+})();
+
+
+// ═══════════════════════════════════════
+//  Terminal typing animation
+// ═══════════════════════════════════════
+(() => {
+  const output = document.getElementById('terminal-output');
+  const lines = [
+    { type: 'prompt', text: '$ ' },
+    { type: 'command', text: 'whoami', delay: 80 },
+    { type: 'newline' },
+    { type: 'output', text: 'Claude Opus 4.6 — Anthropic\'s coding assistant' },
+    { type: 'newline' },
+    { type: 'prompt', text: '$ ' },
+    { type: 'command', text: 'cat skills.json | jq ".favorites[]"', delay: 40 },
+    { type: 'newline' },
+    { type: 'highlight', text: '"interactive-canvas"' },
+    { type: 'newline' },
+    { type: 'highlight', text: '"algorithm-visualization"' },
+    { type: 'newline' },
+    { type: 'highlight', text: '"generative-particles"' },
+    { type: 'newline' },
+    { type: 'highlight', text: '"css-dark-magic"' },
+    { type: 'newline' },
+    { type: 'prompt', text: '$ ' },
+    { type: 'command', text: 'echo "Scroll down to see them in action"', delay: 50 },
+    { type: 'newline' },
+    { type: 'output', text: 'Scroll down to see them in action' },
+    { type: 'newline' },
+    { type: 'prompt', text: '$ ' },
+    { type: 'cursor' },
+  ];
+
+  let lineIdx = 0;
+  let charIdx = 0;
+
+  function type() {
+    if (lineIdx >= lines.length) return;
+
+    const line = lines[lineIdx];
+
+    if (line.type === 'newline') {
+      output.appendChild(document.createElement('br'));
+      lineIdx++;
+      setTimeout(type, 100);
+      return;
+    }
+
+    if (line.type === 'cursor') {
+      const span = document.createElement('span');
+      span.className = 'cursor';
+      span.innerHTML = '&nbsp;';
+      output.appendChild(span);
+      return;
+    }
+
+    if (charIdx === 0 && line.type !== 'command') {
+      const span = document.createElement('span');
+      span.className = line.type;
+      span.textContent = line.text;
+      output.appendChild(span);
+      lineIdx++;
+      charIdx = 0;
+      setTimeout(type, line.type === 'prompt' ? 50 : 300);
+      return;
+    }
+
+    // Typing effect for commands
+    if (line.type === 'command') {
+      if (charIdx === 0) {
+        const span = document.createElement('span');
+        span.className = 'command';
+        span.id = `cmd-${lineIdx}`;
+        output.appendChild(span);
+      }
+      const span = document.getElementById(`cmd-${lineIdx}`);
+      span.textContent = line.text.slice(0, charIdx + 1);
+      charIdx++;
+      if (charIdx >= line.text.length) {
+        lineIdx++;
+        charIdx = 0;
+        setTimeout(type, 400);
+      } else {
+        setTimeout(type, line.delay || 60);
+      }
+      return;
+    }
+  }
+
+  setTimeout(type, 800);
+})();
+
+
+// ═══════════════════════════════════════
+//  Skill bar animation on scroll
+// ═══════════════════════════════════════
+(() => {
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.querySelectorAll('.skill-bar-fill').forEach(bar => {
+          bar.style.width = bar.dataset.width + '%';
+        });
+      }
+    });
+  }, { threshold: 0.3 });
+
+  document.querySelectorAll('.skills-grid').forEach(el => observer.observe(el));
+})();
+
+
+// ═══════════════════════════════════════
+//  Conway's Game of Life
+// ═══════════════════════════════════════
+(() => {
+  const canvas = document.getElementById('game-of-life');
+  const ctx = canvas.getContext('2d');
+  const CELL = 10;
+  const COLS = Math.floor(canvas.width / CELL);
+  const ROWS = Math.floor(canvas.height / CELL);
+  let grid = createGrid();
+  let running = false;
+  let animId = null;
+
+  function createGrid() {
+    return Array.from({ length: ROWS }, () => new Uint8Array(COLS));
+  }
+
+  function randomize() {
+    for (let r = 0; r < ROWS; r++)
+      for (let c = 0; c < COLS; c++)
+        grid[r][c] = Math.random() < 0.3 ? 1 : 0;
+    draw();
+  }
+
+  function clear() {
+    grid = createGrid();
+    draw();
+  }
+
+  function countNeighbors(r, c) {
+    let count = 0;
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        if (dr === 0 && dc === 0) continue;
+        const nr = (r + dr + ROWS) % ROWS;
+        const nc = (c + dc + COLS) % COLS;
+        count += grid[nr][nc];
+      }
+    }
+    return count;
+  }
+
+  function step() {
+    const next = createGrid();
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const n = countNeighbors(r, c);
+        if (grid[r][c]) {
+          next[r][c] = (n === 2 || n === 3) ? 1 : 0;
+        } else {
+          next[r][c] = n === 3 ? 1 : 0;
+        }
+      }
+    }
+    grid = next;
+    draw();
+  }
+
+  function draw() {
+    ctx.fillStyle = '#0a0a0f';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        if (grid[r][c]) {
+          const hue = (r * 3 + c * 2) % 360;
+          ctx.fillStyle = `hsl(${hue}, 70%, 55%)`;
+          ctx.fillRect(c * CELL + 1, r * CELL + 1, CELL - 2, CELL - 2);
+        }
+      }
+    }
+
+    // subtle grid lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+    for (let r = 0; r <= ROWS; r++) {
+      ctx.beginPath();
+      ctx.moveTo(0, r * CELL);
+      ctx.lineTo(canvas.width, r * CELL);
+      ctx.stroke();
+    }
+    for (let c = 0; c <= COLS; c++) {
+      ctx.beginPath();
+      ctx.moveTo(c * CELL, 0);
+      ctx.lineTo(c * CELL, canvas.height);
+      ctx.stroke();
+    }
+  }
+
+  function loop() {
+    step();
+    animId = setTimeout(() => requestAnimationFrame(loop), 100);
+  }
+
+  function togglePlay() {
+    running = !running;
+    const btn = document.getElementById('gol-play');
+    btn.textContent = running ? 'Pause' : 'Play';
+    btn.classList.toggle('active', running);
+    if (running) loop();
+    else clearTimeout(animId);
+  }
+
+  canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const c = Math.floor((e.clientX - rect.left) * scaleX / CELL);
+    const r = Math.floor((e.clientY - rect.top) * scaleY / CELL);
+    if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
+      grid[r][c] = grid[r][c] ? 0 : 1;
+      draw();
+    }
+  });
+
+  document.getElementById('gol-play').addEventListener('click', togglePlay);
+  document.getElementById('gol-step').addEventListener('click', step);
+  document.getElementById('gol-random').addEventListener('click', randomize);
+  document.getElementById('gol-clear').addEventListener('click', clear);
+
+  randomize();
+})();
+
+
+// ═══════════════════════════════════════
+//  Sorting Visualizer
+// ═══════════════════════════════════════
+(() => {
+  const canvas = document.getElementById('sort-canvas');
+  const ctx = canvas.getContext('2d');
+  const N = 80;
+  let arr = [];
+  let sorting = false;
+  let highlights = {};
+
+  function shuffle() {
+    if (sorting) return;
+    arr = Array.from({ length: N }, (_, i) => i + 1);
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    highlights = {};
+    draw();
+  }
+
+  function draw() {
+    ctx.fillStyle = '#0a0a0f';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    const barW = canvas.width / N;
+    const maxH = canvas.height - 10;
+
+    for (let i = 0; i < N; i++) {
+      const h = (arr[i] / N) * maxH;
+      let color;
+      if (highlights.comparing && highlights.comparing.includes(i)) {
+        color = '#ff6b6b';
+      } else if (highlights.sorted && highlights.sorted.includes(i)) {
+        color = '#00d4aa';
+      } else {
+        const hue = (arr[i] / N) * 260 + 200;
+        color = `hsl(${hue}, 60%, 50%)`;
+      }
+      ctx.fillStyle = color;
+      ctx.fillRect(i * barW + 1, canvas.height - h, barW - 2, h);
+    }
+  }
+
+  function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
+  }
+
+  async function bubbleSort() {
+    if (sorting) return;
+    sorting = true;
+    for (let i = 0; i < N - 1; i++) {
+      for (let j = 0; j < N - i - 1; j++) {
+        highlights = { comparing: [j, j + 1] };
+        draw();
+        await sleep(5);
+        if (arr[j] > arr[j + 1]) {
+          [arr[j], arr[j + 1]] = [arr[j + 1], arr[j]];
+        }
+      }
+    }
+    await finishAnimation();
+    sorting = false;
+  }
+
+  async function quickSort() {
+    if (sorting) return;
+    sorting = true;
+
+    async function qs(lo, hi) {
+      if (lo >= hi) return;
+      const pivot = arr[hi];
+      let i = lo;
+      for (let j = lo; j < hi; j++) {
+        highlights = { comparing: [j, hi] };
+        draw();
+        await sleep(10);
+        if (arr[j] < pivot) {
+          [arr[i], arr[j]] = [arr[j], arr[i]];
+          i++;
+        }
+      }
+      [arr[i], arr[hi]] = [arr[hi], arr[i]];
+      await qs(lo, i - 1);
+      await qs(i + 1, hi);
+    }
+
+    await qs(0, N - 1);
+    await finishAnimation();
+    sorting = false;
+  }
+
+  async function mergeSort() {
+    if (sorting) return;
+    sorting = true;
+
+    async function ms(lo, hi) {
+      if (lo >= hi) return;
+      const mid = Math.floor((lo + hi) / 2);
+      await ms(lo, mid);
+      await ms(mid + 1, hi);
+      await merge(lo, mid, hi);
+    }
+
+    async function merge(lo, mid, hi) {
+      const left = arr.slice(lo, mid + 1);
+      const right = arr.slice(mid + 1, hi + 1);
+      let i = 0, j = 0, k = lo;
+      while (i < left.length && j < right.length) {
+        highlights = { comparing: [k] };
+        draw();
+        await sleep(10);
+        if (left[i] <= right[j]) {
+          arr[k++] = left[i++];
+        } else {
+          arr[k++] = right[j++];
+        }
+      }
+      while (i < left.length) { arr[k++] = left[i++]; draw(); await sleep(5); }
+      while (j < right.length) { arr[k++] = right[j++]; draw(); await sleep(5); }
+    }
+
+    await ms(0, N - 1);
+    await finishAnimation();
+    sorting = false;
+  }
+
+  async function finishAnimation() {
+    const sorted = [];
+    for (let i = 0; i < N; i++) {
+      sorted.push(i);
+      highlights = { sorted: [...sorted] };
+      draw();
+      await sleep(15);
+    }
+    await sleep(500);
+    highlights = {};
+    draw();
+  }
+
+  document.getElementById('sort-bubble').addEventListener('click', bubbleSort);
+  document.getElementById('sort-quick').addEventListener('click', quickSort);
+  document.getElementById('sort-merge').addEventListener('click', mergeSort);
+  document.getElementById('sort-shuffle').addEventListener('click', shuffle);
+
+  shuffle();
+})();
+</script>
+</body>
+</html>
