@@ -25,12 +25,49 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0f;font-family:
 .fuel-fill{height:100%;background:linear-gradient(90deg,#0f0,#0ff);transition:width 0.2s}
 .ammo-bar{width:50px;height:8px;background:#112;border:1px solid #335;border-radius:2px;overflow:hidden;display:inline-block;vertical-align:middle}
 .ammo-fill{height:100%;background:linear-gradient(90deg,#ff0,#fa0);transition:width 0.2s}
+/* ── Touch controls ── */
+#touch-controls{display:none;position:absolute;bottom:42px;left:0;right:0;pointer-events:none;z-index:10;padding:0 8px 6px}
+.touch-row{display:flex;justify-content:space-between;align-items:center;pointer-events:none}
+.touch-btn{pointer-events:auto;width:56px;height:56px;border-radius:50%;border:2px solid rgba(0,255,255,0.4);background:rgba(0,20,40,0.5);color:#0ff;font:bold 13px 'Courier New',monospace;display:flex;align-items:center;justify-content:center;user-select:none;-webkit-user-select:none;touch-action:none;text-shadow:0 0 6px #0ff}
+.touch-btn:active,.touch-btn.held{background:rgba(0,255,255,0.25);border-color:#0ff}
+.touch-btn.fire{border-color:rgba(255,100,100,0.5);color:#f66;text-shadow:0 0 6px #f66;width:64px;height:64px}
+.touch-btn.fire:active,.touch-btn.fire.held{background:rgba(255,50,50,0.25);border-color:#f66}
+.touch-btn.bomb{border-color:rgba(255,160,0,0.5);color:#fa0;text-shadow:0 0 6px #fa0}
+.touch-btn.bomb:active,.touch-btn.bomb.held{background:rgba(255,160,0,0.25);border-color:#fa0}
+.touch-side{display:flex;flex-direction:column;gap:6px;align-items:center}
+.touch-mid{display:flex;gap:10px;align-items:center}
+#touch-start{display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:20;pointer-events:auto;padding:18px 36px;border-radius:12px;border:2px solid #0ff;background:rgba(0,20,40,0.8);color:#0ff;font:bold 20px 'Courier New',monospace;text-shadow:0 0 10px #0ff;touch-action:none;user-select:none;-webkit-user-select:none}
+@media (hover:none) and (pointer:coarse){
+  #touch-controls{display:flex !important}
+  #touch-start{display:block !important}
+}
 </style>
 </head>
 <body>
 <div id="wrap">
   <canvas id="radar"></canvas>
-  <div id="game"><canvas id="c"></canvas></div>
+  <div id="game">
+    <canvas id="c"></canvas>
+    <!-- Touch start button (mobile only) -->
+    <div id="touch-start">TAP TO START</div>
+    <!-- Touch controls overlay (mobile only) -->
+    <div id="touch-controls">
+      <div class="touch-row">
+        <div class="touch-side">
+          <div class="touch-btn" data-key="ArrowUp">UP</div>
+          <div class="touch-btn" data-key="ArrowDown">DN</div>
+        </div>
+        <div class="touch-mid">
+          <div class="touch-btn fire" data-key="Space">FIRE</div>
+          <div class="touch-btn bomb" data-key="KeyB">BOM</div>
+        </div>
+        <div class="touch-side">
+          <div class="touch-btn" data-key="Period">FLIP</div>
+          <div class="touch-btn" data-key="KeyH">HOME</div>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="hud">
     <div class="hud-item"><span class="hud-label">Lives</span><span id="h-lives" class="hud-val">●●●●●</span></div>
     <div class="hud-item"><span class="hud-label">Fuel</span><span class="fuel-bar"><span id="h-fuel" class="fuel-fill" style="width:100%"></span></span></div>
@@ -110,6 +147,42 @@ let titlePlaneX = -200;
 const keys = {};
 window.addEventListener('keydown', e => { keys[e.code] = true; if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault(); });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// ── Touch controls ──
+const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+
+// Touch start button
+const touchStartBtn = document.getElementById('touch-start');
+if (touchStartBtn) {
+  touchStartBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    keys['Enter'] = true;
+    setTimeout(() => { keys['Enter'] = false; }, 100);
+    touchStartBtn.style.display = 'none';
+  });
+}
+
+// Touch control buttons — map to keys
+document.querySelectorAll('.touch-btn').forEach(btn => {
+  const keyCode = btn.dataset.key;
+  if (!keyCode) return;
+
+  btn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    keys[keyCode] = true;
+    btn.classList.add('held');
+    initAudio();
+  });
+  btn.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    keys[keyCode] = false;
+    btn.classList.remove('held');
+  });
+  btn.addEventListener('touchcancel', (e) => {
+    keys[keyCode] = false;
+    btn.classList.remove('held');
+  });
+});
 
 // ── Audio (Web Audio synth) ──
 let audioCtx = null;
@@ -503,19 +576,23 @@ function update(dt) {
   }
 }
 
-// Helper: get the effective angle index accounting for flip direction
+// ── Angle helpers ──
+// Angle indices: 0=right, 4=up, 8=left, 12=down (counterclockwise)
+// "Nose up" = increment toward 4, "Nose down" = decrement toward 12 (via 0→15→14→13...)
+
 function getEffectiveAngle(p) {
-  // When flipped (facing left), mirror the angle: 0→8, 1→7, etc.
+  // When flipped (facing left), mirror: right-side angles map to left-side
   if (p.flipped) {
     return (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
   }
   return p.angleIdx;
 }
 
-// Helper: get the radian angle for rendering
+// Radian angle for canvas rendering (canvas: 0=right, positive=clockwise=down)
 function getPlaneRadians(p) {
   const effAngle = getEffectiveAngle(p);
-  return effAngle * ANGLE_STEP;
+  // effAngle goes counterclockwise, canvas goes clockwise, so negate
+  return -effAngle * ANGLE_STEP;
 }
 
 function updatePlayer(dt) {
@@ -531,39 +608,34 @@ function updatePlayer(dt) {
     if (dx > 50 && p.flipped) { p.flipped = false; p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES; }
     if (dx < -50 && !p.flipped) { p.flipped = true; p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES; }
 
-    // Accelerate
     p.accel = PLANE_MAX_ACCEL;
 
     if (Math.abs(dx) > 80) {
-      // Level flight toward home
+      // Level flight: move angleIdx toward 0
       if (p.angleIdx > 0 && p.angleIdx <= 8) p.angleIdx--;
       else if (p.angleIdx > 8) p.angleIdx++;
       if (p.angleIdx >= NUM_ANGLES) p.angleIdx = 0;
     } else {
-      // Descend: nose down slightly
+      // Approach base
       const homeY = getTerrainY(homeX) - 12;
-      if (p.y < homeY - 20) {
-        // Nose down
-        if (p.angleIdx < 2) p.angleIdx++;
-      } else if (p.y > homeY + 5) {
-        // Nose up
-        if (p.angleIdx > 0) p.angleIdx--;
+      if (p.y > homeY + 5) {
+        // Too low, nose up
+        if (p.angleIdx < 4) p.angleIdx++;
+      } else if (p.y < homeY - 20) {
+        // Too high, nose down
+        if (p.angleIdx > 0 && p.angleIdx <= 4) p.angleIdx--;
+        else if (p.angleIdx === 0) p.angleIdx = 15;
+        else if (p.angleIdx > 12) p.angleIdx--;
       }
 
       // Landing check
       const groundY = getTerrainY(p.x);
-      if (p.y >= groundY - 15 && p.speed <= PLANE_MIN_SPEED + 2 && (p.angleIdx === 0 || p.angleIdx === 15)) {
+      if (p.y >= groundY - 15 && p.speed <= PLANE_MIN_SPEED + 2 && (p.angleIdx <= 1 || p.angleIdx >= 15)) {
         p.landed = true;
         p.autopilot = false;
-        p.speed = 0;
-        p.accel = 0;
-        p.angleIdx = 0;
-        p.vx = 0;
-        p.vy = 0;
-        p.y = groundY - 8;
-        p.fuel = MAX_FUEL;
-        p.ammo = MAX_AMMO;
-        p.bombCount = MAX_BOMBS;
+        p.speed = 0; p.accel = 0; p.angleIdx = 0;
+        p.vx = 0; p.vy = 0; p.y = groundY - 8;
+        p.fuel = MAX_FUEL; p.ammo = MAX_AMMO; p.bombCount = MAX_BOMBS;
         return;
       }
     }
@@ -571,8 +643,8 @@ function updatePlayer(dt) {
 
   // ── Manual controls ──
   if (!p.autopilot) {
-    // Accelerate (X key)
-    if (keys['KeyX']) {
+    // Accelerate (X or ArrowUp)
+    if (keys['KeyX'] || keys['ArrowUp']) {
       if (p.accel < PLANE_MAX_ACCEL) p.accel++;
     }
     // Decelerate (Backslash)
@@ -580,17 +652,17 @@ function updatePlayer(dt) {
       if (p.accel > 0) p.accel--;
     }
 
-    // Nose up (Comma or ArrowUp) — decrease angle index
+    // Nose up (Comma or ArrowUp) — INCREMENT angle index toward 4
     if (keys['Comma'] || keys['ArrowUp']) {
       if (!p._turnHeld || (p.moveCount % 3 === 0)) {
-        p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
+        p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
         p._turnHeld = true;
       }
     }
-    // Nose down (Slash or ArrowDown) — increase angle index
+    // Nose down (Slash or ArrowDown) — DECREMENT angle index toward 12 via 0→15→14...
     else if (keys['Slash'] || keys['ArrowDown']) {
       if (!p._turnHeld || (p.moveCount % 3 === 0)) {
-        p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+        p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
         p._turnHeld = true;
       }
     } else {
@@ -601,7 +673,6 @@ function updatePlayer(dt) {
     if (keys['Period'] || keys['KeyF']) {
       if (!p._flipHeld) {
         p.flipped = !p.flipped;
-        // Mirror angle: in original, flip keeps you on same trajectory but inverts controls
         p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
         p._flipHeld = true;
       }
@@ -611,22 +682,16 @@ function updatePlayer(dt) {
 
     // Autopilot (H)
     if (keys['KeyH']) {
-      if (!p._autoHeld) {
-        p.autopilot = true;
-        p._autoHeld = true;
-      }
-    } else {
-      p._autoHeld = false;
-    }
+      if (!p._autoHeld) { p.autopilot = true; p._autoHeld = true; }
+    } else { p._autoHeld = false; }
 
     // Fire
     if (keys['Space'] && p.fireCooldown <= 0 && p.ammo > 0) {
       const rad = getPlaneRadians(p);
-      const dir = p.flipped ? -1 : 1;
       const bx = p.x + Math.cos(rad) * 25;
-      const by = p.y - Math.sin(rad) * 25;
+      const by = p.y + Math.sin(rad) * 25;
       const bvx = Math.cos(rad) * BULLET_SPEED + p.vx * 0.3;
-      const bvy = -Math.sin(rad) * BULLET_SPEED + p.vy * 0.3;
+      const bvy = Math.sin(rad) * BULLET_SPEED + p.vy * 0.3;
       bullets.push({ x: bx, y: by, vx: bvx, vy: bvy, life: 1.2, friendly: true });
       p.ammo--;
       p.fireCooldown = 0.08;
@@ -650,77 +715,61 @@ function updatePlayer(dt) {
   if (!p.landed) {
     const effAngle = getEffectiveAngle(p);
 
-    // Update speed every few frames (like original's countmove & 3)
+    // Speed update every 4 frames (matches original)
     if (p.moveCount % 4 === 0) {
-      // Target speed = base minimum + throttle + gravity effect for current angle
       const grav = GRAVITY_TABLE[effAngle];
       const targetSpeed = PLANE_MIN_SPEED + p.accel + grav;
-
-      // Speed converges toward target
-      if (p.speed < targetSpeed) {
-        p.speed++;
-      } else if (p.speed > targetSpeed) {
-        p.speed--;
-      }
-
-      // Clamp speed
+      if (p.speed < targetSpeed) p.speed++;
+      else if (p.speed > targetSpeed) p.speed--;
       if (p.speed > PLANE_MAX_SPEED) p.speed = PLANE_MAX_SPEED;
     }
 
-    // Stall check: if speed drops too low and not pointing down
+    // Stall: speed too low
     if (p.speed <= STALL_SPEED && !p.stalled) {
-      // Enter stall — plane starts falling, nose drops
       p.stalled = true;
     }
 
     if (p.stalled) {
-      // In stall: nose drops toward straight down (index 12 = straight down)
-      // and speed increases from gravity until we recover
+      // Nose drops toward "down" (index 12 for right-facing, 4 for left-facing)
       if (p.moveCount % 6 === 0) {
-        if (p.flipped) {
-          // When flipped, "down" in angle index space is different
-          if (p.angleIdx < 4) p.angleIdx++;
-          else if (p.angleIdx > 4) p.angleIdx--;
-        } else {
-          if (p.angleIdx < 12 && p.angleIdx >= 4) p.angleIdx++;
-          else if (p.angleIdx > 12) p.angleIdx--;
-          else if (p.angleIdx < 4) p.angleIdx++;
+        const downIdx = p.flipped ? 4 : 12;
+        if (p.angleIdx !== downIdx) {
+          // Find shortest path to downIdx
+          const diff = ((downIdx - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
+          if (diff <= 8) p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+          else p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
         }
       }
-
-      // Recover from stall when speed is sufficient and nose is reasonable
+      // Recover when speed adequate and near level flight
       if (p.speed >= PLANE_MIN_SPEED && (effAngle <= 2 || effAngle >= 14)) {
         p.stalled = false;
       }
     }
 
-    // Convert speed + angle to velocity
-    // Note: in Sopwith, SIN is positive going UP, but our canvas Y is down
-    // So we negate the SIN component for vy
+    // Velocity from speed + angle
+    // COS_TABLE/SIN_TABLE: index 0=right, 4=up in math coords
+    // Canvas: Y-down, so negate SIN for vy
     p.vx = COS_TABLE[effAngle] * p.speed * PIXELS_PER_UNIT;
     p.vy = -SIN_TABLE[effAngle] * p.speed * PIXELS_PER_UNIT;
 
-    // If stalled or very slow, add extra gravity pull
+    // Stall gravity
     if (p.stalled || p.speed < PLANE_MIN_SPEED) {
-      p.vy += 120 * dt;
+      p.vy += 150 * dt;
     }
 
     // Move
     p.x += p.vx * dt;
     p.y += p.vy * dt;
 
-    // Fuel consumption
+    // Fuel
     p.fuel -= dt * (15 + p.accel * 8);
-    if (p.fuel <= 0) {
-      p.fuel = 0;
-      p.accel = 0;
-    }
+    if (p.fuel <= 0) { p.fuel = 0; p.accel = 0; }
 
     // Engine trail
     if (p.accel > 0) {
       const rad = getPlaneRadians(p);
       const tx = p.x - Math.cos(rad) * 20;
-      const ty = p.y + Math.sin(rad) * 20;
+      const ty = p.y - Math.sin(rad) * 20;
       addEngineTrail(tx, ty, -p.vx * 0.3, -p.vy * 0.3);
     }
 
@@ -731,7 +780,6 @@ function updatePlayer(dt) {
     // Ceiling
     if (p.y < -50) {
       p.y = -50;
-      // Stall at ceiling
       p.stalled = true;
       p.speed = 0;
     }
@@ -739,40 +787,29 @@ function updatePlayer(dt) {
     // Ground collision
     const groundY = getTerrainY(p.x);
     if (p.y >= groundY - 8) {
-      // Check if near base for landing
       const nearBase = p.x > baseX - 30 && p.x < baseX + BASE_WIDTH + 30;
-      const levelEnough = (p.angleIdx === 0 || p.angleIdx >= 14 || p.angleIdx <= 1);
+      // Level = angleIdx near 0 (either 0, 1, or 15)
+      const levelEnough = (p.angleIdx <= 1 || p.angleIdx >= 15);
       const slowEnough = p.speed <= PLANE_MIN_SPEED + 2;
 
       if (nearBase && levelEnough && slowEnough && !p.stalled) {
-        // Successful landing
         p.y = groundY - 8;
-        p.vy = 0;
-        p.vx = 0;
-        p.speed = 0;
-        p.accel = 0;
-        p.angleIdx = 0;
-        p.landed = true;
-        p.stalled = false;
-        // Resupply
-        p.fuel = MAX_FUEL;
-        p.ammo = MAX_AMMO;
-        p.bombCount = MAX_BOMBS;
+        p.vy = 0; p.vx = 0; p.speed = 0; p.accel = 0; p.angleIdx = 0;
+        p.landed = true; p.stalled = false;
+        p.fuel = MAX_FUEL; p.ammo = MAX_AMMO; p.bombCount = MAX_BOMBS;
       } else {
-        // Crash!
         killPlayer();
         return;
       }
     }
   } else {
     // ── On ground at base ──
-    // Accelerate to take off (X or ArrowUp)
     if (keys['KeyX'] || keys['ArrowUp']) {
       p.landed = false;
       p.stalled = false;
       p.accel = PLANE_MAX_ACCEL;
-      p.speed = PLANE_MAX_SPEED - 1;  // Strong takeoff speed
-      p.angleIdx = 14; // Nose up — climb quickly away from ground
+      p.speed = PLANE_MAX_SPEED - 1;
+      p.angleIdx = 2; // Slight nose-up: index 2 = climbing right at ~45°
     }
     p.y = getTerrainY(p.x) - 8;
   }
@@ -1229,7 +1266,7 @@ function draw() {
   // Player
   if (state === ST.PLAYING) {
     if (player.invincible <= 0 || Math.sin(Date.now() * 0.02) > 0) {
-      drawBiplane(ctx, player.x, player.y, -getPlaneRadians(player), player.flipped, '#0ff');
+      drawBiplane(ctx, player.x, player.y, getPlaneRadians(player), player.flipped, '#0ff');
     }
   }
 
@@ -1591,20 +1628,23 @@ function gameLoop(timestamp) {
 function handleInput() {
   if (keys['Enter']) {
     keys['Enter'] = false;
-    if (state === ST.TITLE) {
+    if (state === ST.TITLE || state === ST.GAME_OVER) {
       initAudio();
       level = 1;
       score = 0;
       lives = 5;
       initLevel();
       state = ST.PLAYING;
-    } else if (state === ST.GAME_OVER) {
-      initAudio();
-      level = 1;
-      score = 0;
-      lives = 5;
-      initLevel();
-      state = ST.PLAYING;
+      // Hide touch start button, show controls
+      if (touchStartBtn) touchStartBtn.style.display = 'none';
+    }
+  }
+
+  // Show touch start on title/game over screens
+  if (isTouchDevice && touchStartBtn) {
+    if (state === ST.TITLE || state === ST.GAME_OVER) {
+      touchStartBtn.style.display = 'block';
+      touchStartBtn.textContent = state === ST.TITLE ? 'TAP TO START' : 'TAP TO RETRY';
     }
   }
 }
