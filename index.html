@@ -66,21 +66,35 @@ window.addEventListener('resize', resize);
 
 // ── Constants ──
 const WORLD_W = 12000;
-const GRAVITY = 280;
-const THRUST_POWER = 320;
-const TURN_SPEED = 2.5;
-const MAX_SPEED = 450;
-const STALL_SPEED = 40;
 const BULLET_SPEED = 600;
 const BOMB_VXFRAC = 0.8;
 const MAX_FUEL = 1000;
 const MAX_AMMO = 200;
 const MAX_BOMBS = 5;
-const FLAK_INTERVAL = 90; // frames between flak shots
+const FLAK_INTERVAL = 90;
 const FLAK_SPEED = 300;
 const ENEMY_SPEED = 200;
 const ENEMY_FIRE_INTERVAL = 60;
 const BASE_WIDTH = 120;
+
+// ── Sopwith-style flight model ──
+// 16 discrete angles (like original), speed scalar, gravity table
+const NUM_ANGLES = 16;
+const ANGLE_STEP = (Math.PI * 2) / NUM_ANGLES;
+// Gravity effect per angle index (from original Sopwith source)
+// Nose up = negative (slows you), nose down = positive (speeds you up)
+const GRAVITY_TABLE = [0, -1, -2, -3, -4, -3, -2, -1, 0, 1, 2, 3, 4, 3, 2, 1];
+// Sine table (scaled to 1.0 instead of 256 as original)
+const SIN_TABLE = [0, 0.383, 0.707, 0.924, 1.0, 0.924, 0.707, 0.383, 0, -0.383, -0.707, -0.924, -1.0, -0.924, -0.707, -0.383];
+const COS_TABLE = SIN_TABLE.map((_, i) => SIN_TABLE[(i + 4) % 16]);
+
+const PLANE_MIN_SPEED = 4;    // Minimum speed (like original)
+const PLANE_MAX_SPEED = 9;    // Maximum speed
+const PLANE_MAX_ACCEL = 4;    // Maximum throttle acceleration
+const PIXELS_PER_UNIT = 28;   // Scale factor: Sopwith speed units → pixel velocity
+const STALL_SPEED = 3;        // Below this speed, plane stalls
+const TURN_RATE = 1;          // Angle steps per input (1 = one notch per press)
+const PROJ_GRAVITY = 300;     // Gravity for projectiles (pixels/s²)
 
 // ── Game State ──
 const ST = { TITLE: 0, PLAYING: 1, DYING: 2, GAME_OVER: 3, LEVEL_COMPLETE: 4 };
@@ -218,10 +232,14 @@ function initPlayer() {
   player = {
     x: baseX + BASE_WIDTH / 2,
     y: ty - 30,
+    // Sopwith-style: single speed scalar + angle index
+    speed: 0,             // current speed (in Sopwith units)
+    accel: 0,             // throttle acceleration (0 to PLANE_MAX_ACCEL)
+    angleIdx: 0,          // 0=right, 4=up, 8=left, 12=down (16 steps)
+    flipped: false,       // facing left (mirrors angle)
+    stalled: false,       // in stall state
+    // Derived velocity (for rendering/collision)
     vx: 0, vy: 0,
-    angle: 0, // radians, 0 = right
-    flipped: false, // facing left
-    throttle: 0,
     fuel: MAX_FUEL,
     ammo: MAX_AMMO,
     bombCount: MAX_BOMBS,
@@ -229,7 +247,13 @@ function initPlayer() {
     bombCooldown: 0,
     invincible: 0,
     landed: true,
-    autopilot: false
+    autopilot: false,
+    // Input edge detection
+    _turnHeld: false,
+    _flipHeld: false,
+    _autoHeld: false,
+    // Frame counter for speed updates (every 4 frames like original)
+    moveCount: 0
   };
 }
 
@@ -464,75 +488,113 @@ function update(dt) {
   }
 }
 
+// Helper: get the effective angle index accounting for flip direction
+function getEffectiveAngle(p) {
+  // When flipped (facing left), mirror the angle: 0→8, 1→7, etc.
+  if (p.flipped) {
+    return (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
+  }
+  return p.angleIdx;
+}
+
+// Helper: get the radian angle for rendering
+function getPlaneRadians(p) {
+  const effAngle = getEffectiveAngle(p);
+  return effAngle * ANGLE_STEP;
+}
+
 function updatePlayer(dt) {
   const p = player;
+  p.moveCount++;
 
-  // Autopilot: fly home
+  // ── Autopilot: fly home ──
   if (p.autopilot) {
     const homeX = baseX + BASE_WIDTH / 2;
-    const homeY = getTerrainY(homeX) - 30;
     const dx = homeX - p.x;
-    const dy = homeY - p.y;
 
-    if (Math.abs(dx) > 50) {
-      // Turn toward home
-      const desiredAngle = Math.atan2(dy * 0.2, dx);
-      const diff = desiredAngle - p.angle;
-      p.angle += Math.sign(diff) * Math.min(Math.abs(diff), TURN_SPEED * dt);
-      p.flipped = dx < 0;
-      p.throttle = 1;
+    // Face toward home
+    if (dx > 50 && p.flipped) { p.flipped = false; p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES; }
+    if (dx < -50 && !p.flipped) { p.flipped = true; p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES; }
+
+    // Accelerate
+    p.accel = PLANE_MAX_ACCEL;
+
+    if (Math.abs(dx) > 80) {
+      // Level flight toward home
+      if (p.angleIdx > 0 && p.angleIdx <= 8) p.angleIdx--;
+      else if (p.angleIdx > 8) p.angleIdx++;
+      if (p.angleIdx >= NUM_ANGLES) p.angleIdx = 0;
     } else {
-      // Descend to land
-      p.throttle = 0.3;
-      const desiredAngle = Math.atan2(dy, dx);
-      const diff = desiredAngle - p.angle;
-      p.angle += Math.sign(diff) * Math.min(Math.abs(diff), TURN_SPEED * 0.5 * dt);
+      // Descend: nose down slightly
+      const homeY = getTerrainY(homeX) - 12;
+      if (p.y < homeY - 20) {
+        // Nose down
+        if (p.angleIdx < 2) p.angleIdx++;
+      } else if (p.y > homeY + 5) {
+        // Nose up
+        if (p.angleIdx > 0) p.angleIdx--;
+      }
 
-      if (Math.abs(dy) < 20 && Math.abs(p.vy) < 30) {
-        // Landed
+      // Landing check
+      const groundY = getTerrainY(p.x);
+      if (p.y >= groundY - 15 && p.speed <= PLANE_MIN_SPEED + 2 && (p.angleIdx === 0 || p.angleIdx === 15)) {
         p.landed = true;
         p.autopilot = false;
+        p.speed = 0;
+        p.accel = 0;
+        p.angleIdx = 0;
         p.vx = 0;
         p.vy = 0;
-        p.angle = 0;
-        p.y = homeY;
-        // Resupply
+        p.y = groundY - 8;
         p.fuel = MAX_FUEL;
         p.ammo = MAX_AMMO;
         p.bombCount = MAX_BOMBS;
+        return;
       }
     }
   }
 
-  // Controls (manual)
+  // ── Manual controls ──
   if (!p.autopilot) {
-    // Throttle
-    if (keys['KeyX'] || keys['ArrowUp']) {
-      p.throttle = Math.min(1, p.throttle + dt * 3);
-    } else {
-      p.throttle = Math.max(0, p.throttle - dt * 1.5);
+    // Accelerate (X key)
+    if (keys['KeyX']) {
+      if (p.accel < PLANE_MAX_ACCEL) p.accel++;
+    }
+    // Decelerate (Backslash)
+    if (keys['Backslash'] || keys['Backquote']) {
+      if (p.accel > 0) p.accel--;
     }
 
-    // Nose up/down
+    // Nose up (Comma or ArrowUp) — decrease angle index
     if (keys['Comma'] || keys['ArrowUp']) {
-      p.angle -= TURN_SPEED * dt;
+      if (!p._turnHeld || (p.moveCount % 3 === 0)) {
+        p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
+        p._turnHeld = true;
+      }
     }
-    if (keys['Slash'] || keys['ArrowDown']) {
-      p.angle += TURN_SPEED * dt;
+    // Nose down (Slash or ArrowDown) — increase angle index
+    else if (keys['Slash'] || keys['ArrowDown']) {
+      if (!p._turnHeld || (p.moveCount % 3 === 0)) {
+        p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+        p._turnHeld = true;
+      }
+    } else {
+      p._turnHeld = false;
     }
 
-    // Flip
+    // Flip (Period or F)
     if (keys['Period'] || keys['KeyF']) {
       if (!p._flipHeld) {
         p.flipped = !p.flipped;
-        p.angle = -p.angle;
+        // Mirror angle: in original, flip keeps you on same trajectory but inverts controls
+        p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
         p._flipHeld = true;
       }
     } else {
       p._flipHeld = false;
     }
 
-    // Autopilot
+    // Autopilot (H)
     if (keys['KeyH']) {
       if (!p._autoHeld) {
         p.autopilot = true;
@@ -544,11 +606,12 @@ function updatePlayer(dt) {
 
     // Fire
     if (keys['Space'] && p.fireCooldown <= 0 && p.ammo > 0) {
+      const rad = getPlaneRadians(p);
       const dir = p.flipped ? -1 : 1;
-      const bx = p.x + Math.cos(p.angle) * 25 * dir;
-      const by = p.y + Math.sin(p.angle) * 25;
-      const bvx = Math.cos(p.angle) * BULLET_SPEED * dir + p.vx * 0.3;
-      const bvy = Math.sin(p.angle) * BULLET_SPEED + p.vy * 0.3;
+      const bx = p.x + Math.cos(rad) * 25;
+      const by = p.y - Math.sin(rad) * 25;
+      const bvx = Math.cos(rad) * BULLET_SPEED + p.vx * 0.3;
+      const bvy = -Math.sin(rad) * BULLET_SPEED + p.vy * 0.3;
       bullets.push({ x: bx, y: by, vx: bvx, vy: bvy, life: 1.2, friendly: true });
       p.ammo--;
       p.fireCooldown = 0.08;
@@ -568,49 +631,82 @@ function updatePlayer(dt) {
   p.bombCooldown -= dt;
   if (p.invincible > 0) p.invincible -= dt;
 
-  // Physics
+  // ── Sopwith-style physics ──
   if (!p.landed) {
-    const dir = p.flipped ? -1 : 1;
-    const thrust = p.throttle * THRUST_POWER;
-    p.vx += Math.cos(p.angle) * thrust * dir * dt;
-    p.vy += Math.sin(p.angle) * thrust * dt;
-    p.vy += GRAVITY * dt;
+    const effAngle = getEffectiveAngle(p);
 
-    // Air drag
-    const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
-    if (speed > 0) {
-      const drag = 0.0005 * speed * speed;
-      const dragFactor = Math.max(0, 1 - drag * dt / speed);
-      p.vx *= dragFactor;
-      p.vy *= dragFactor;
+    // Update speed every few frames (like original's countmove & 3)
+    if (p.moveCount % 4 === 0) {
+      // Target speed = base minimum + throttle + gravity effect for current angle
+      const grav = GRAVITY_TABLE[effAngle];
+      const targetSpeed = PLANE_MIN_SPEED + p.accel + grav;
+
+      // Speed converges toward target
+      if (p.speed < targetSpeed) {
+        p.speed++;
+      } else if (p.speed > targetSpeed) {
+        p.speed--;
+      }
+
+      // Clamp speed
+      if (p.speed > PLANE_MAX_SPEED) p.speed = PLANE_MAX_SPEED;
     }
 
-    // Lift
-    const lift = -Math.sign(p.vy) * Math.abs(p.vx) * 0.15 * dt;
-    p.vy += lift;
-
-    // Speed cap
-    const sp2 = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
-    if (sp2 > MAX_SPEED) {
-      p.vx *= MAX_SPEED / sp2;
-      p.vy *= MAX_SPEED / sp2;
+    // Stall check: if speed drops too low and not pointing down
+    if (p.speed <= STALL_SPEED && !p.stalled) {
+      // Enter stall — plane starts falling, nose drops
+      p.stalled = true;
     }
 
+    if (p.stalled) {
+      // In stall: nose drops toward straight down (index 12 = straight down)
+      // and speed increases from gravity until we recover
+      if (p.moveCount % 6 === 0) {
+        if (p.flipped) {
+          // When flipped, "down" in angle index space is different
+          if (p.angleIdx < 4) p.angleIdx++;
+          else if (p.angleIdx > 4) p.angleIdx--;
+        } else {
+          if (p.angleIdx < 12 && p.angleIdx >= 4) p.angleIdx++;
+          else if (p.angleIdx > 12) p.angleIdx--;
+          else if (p.angleIdx < 4) p.angleIdx++;
+        }
+      }
+
+      // Recover from stall when speed is sufficient and nose is reasonable
+      if (p.speed >= PLANE_MIN_SPEED && (effAngle <= 2 || effAngle >= 14)) {
+        p.stalled = false;
+      }
+    }
+
+    // Convert speed + angle to velocity
+    // Note: in Sopwith, SIN is positive going UP, but our canvas Y is down
+    // So we negate the SIN component for vy
+    p.vx = COS_TABLE[effAngle] * p.speed * PIXELS_PER_UNIT;
+    p.vy = -SIN_TABLE[effAngle] * p.speed * PIXELS_PER_UNIT;
+
+    // If stalled or very slow, add extra gravity pull
+    if (p.stalled || p.speed < PLANE_MIN_SPEED) {
+      p.vy += 120 * dt;
+    }
+
+    // Move
     p.x += p.vx * dt;
     p.y += p.vy * dt;
 
     // Fuel consumption
-    p.fuel -= dt * (20 + p.throttle * 30);
+    p.fuel -= dt * (15 + p.accel * 8);
     if (p.fuel <= 0) {
       p.fuel = 0;
-      p.throttle = 0;
+      p.accel = 0;
     }
 
     // Engine trail
-    if (p.throttle > 0.1) {
-      const tx = p.x - Math.cos(p.angle) * 20 * dir;
-      const ty = p.y - Math.sin(p.angle) * 20;
-      addEngineTrail(tx, ty, -p.vx, -p.vy);
+    if (p.accel > 0) {
+      const rad = getPlaneRadians(p);
+      const tx = p.x - Math.cos(rad) * 20;
+      const ty = p.y + Math.sin(rad) * 20;
+      addEngineTrail(tx, ty, -p.vx * 0.3, -p.vy * 0.3);
     }
 
     // World wrap
@@ -618,27 +714,35 @@ function updatePlayer(dt) {
     if (p.x >= WORLD_W) p.x -= WORLD_W;
 
     // Ceiling
-    if (p.y < -50) { p.y = -50; p.vy = Math.abs(p.vy) * 0.5; }
+    if (p.y < -50) {
+      p.y = -50;
+      // Stall at ceiling
+      p.stalled = true;
+      p.speed = 0;
+    }
 
     // Ground collision
     const groundY = getTerrainY(p.x);
     if (p.y >= groundY - 8) {
-      const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
       // Check if near base for landing
-      const nearBase = p.x > baseX - 20 && p.x < baseX + BASE_WIDTH + 20;
-      if (nearBase && speed < 80 && Math.abs(p.angle) < 0.4) {
+      const nearBase = p.x > baseX - 30 && p.x < baseX + BASE_WIDTH + 30;
+      const levelEnough = (p.angleIdx === 0 || p.angleIdx >= 14 || p.angleIdx <= 1);
+      const slowEnough = p.speed <= PLANE_MIN_SPEED + 2;
+
+      if (nearBase && levelEnough && slowEnough && !p.stalled) {
         // Successful landing
         p.y = groundY - 8;
         p.vy = 0;
-        p.vx *= 0.9;
-        if (Math.abs(p.vx) < 5) {
-          p.vx = 0;
-          p.landed = true;
-          // Resupply
-          p.fuel = MAX_FUEL;
-          p.ammo = MAX_AMMO;
-          p.bombCount = MAX_BOMBS;
-        }
+        p.vx = 0;
+        p.speed = 0;
+        p.accel = 0;
+        p.angleIdx = 0;
+        p.landed = true;
+        p.stalled = false;
+        // Resupply
+        p.fuel = MAX_FUEL;
+        p.ammo = MAX_AMMO;
+        p.bombCount = MAX_BOMBS;
       } else {
         // Crash!
         killPlayer();
@@ -646,12 +750,14 @@ function updatePlayer(dt) {
       }
     }
   } else {
-    // On ground at base
+    // ── On ground at base ──
+    // Accelerate to take off (X or ArrowUp)
     if (keys['KeyX'] || keys['ArrowUp']) {
-      // Takeoff
       p.landed = false;
-      p.vx = p.flipped ? -100 : 100;
-      p.vy = -60;
+      p.stalled = false;
+      p.accel = PLANE_MAX_ACCEL;
+      p.speed = PLANE_MIN_SPEED + 2;  // Enough to fly
+      p.angleIdx = 15; // Slightly nose-up (15 = -1 step from level = slight climb)
     }
     p.y = getTerrainY(p.x) - 8;
   }
@@ -677,7 +783,7 @@ function updateBullets(dt) {
     const b = bullets[i];
     b.x += b.vx * dt;
     b.y += b.vy * dt;
-    b.vy += GRAVITY * 0.3 * dt;
+    b.vy += PROJ_GRAVITY * 0.3 * dt;
     b.life -= dt;
 
     // World wrap
@@ -755,7 +861,7 @@ function updateBombs(dt) {
     const b = bombs[i];
     b.x += b.vx * dt;
     b.y += b.vy * dt;
-    b.vy += GRAVITY * dt;
+    b.vy += PROJ_GRAVITY * dt;
     b.life -= dt;
 
     if (b.x < 0) b.x += WORLD_W;
@@ -1095,7 +1201,7 @@ function draw() {
   // Player
   if (state === ST.PLAYING) {
     if (player.invincible <= 0 || Math.sin(Date.now() * 0.02) > 0) {
-      drawBiplane(ctx, player.x, player.y, player.angle, player.flipped, '#0ff');
+      drawBiplane(ctx, player.x, player.y, -getPlaneRadians(player), player.flipped, '#0ff');
     }
   }
 
@@ -1348,8 +1454,9 @@ function drawTitle(W, H) {
 
   // Controls
   const ctrls = [
-    ['Arrow Up / X', 'Throttle + Nose Up'],
-    ['Arrow Down / /', 'Nose Down'],
+    [', or Arrow Up', 'Nose Up + Accelerate'],
+    ['/ or Arrow Down', 'Nose Down'],
+    ['X', 'Accelerate'],
     ['. or F', 'Flip Plane'],
     ['Space', 'Machine Gun'],
     ['B', 'Drop Bomb'],
@@ -1478,9 +1585,9 @@ function handleInput() {
 function updateEngineSound() {
   if (!engineGain || !audioCtx) return;
   if (state === ST.PLAYING && player && !player.landed) {
-    const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
-    engineOsc.frequency.value = 60 + speed * 0.3 + player.throttle * 40;
-    engineGain.gain.value = 0.02 + player.throttle * 0.03;
+    const speed = player.speed * PIXELS_PER_UNIT;
+    engineOsc.frequency.value = 60 + speed * 0.3 + player.accel * 10;
+    engineGain.gain.value = 0.02 + (player.accel / PLANE_MAX_ACCEL) * 0.03;
   } else {
     engineGain.gain.value = 0;
   }
