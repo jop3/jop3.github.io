@@ -520,64 +520,106 @@ function drawBiplane(ctx, x, y, angle, flipped, color, scale) {
   neonGlow(ctx, color, 8);
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
-  ctx.fillStyle = 'transparent';
 
-  // Fuselage
+  // ── Fuselage (centered on y=0, nose right) ──
+  // Rounded body shape, wider at cockpit
   ctx.beginPath();
-  ctx.moveTo(-18, 0);
-  ctx.lineTo(18, 0);
-  ctx.lineTo(22, -2);
-  ctx.lineTo(18, -4);
-  ctx.lineTo(-14, -4);
-  ctx.lineTo(-18, 0);
+  ctx.moveTo(-20, 1);         // tail bottom
+  ctx.lineTo(-8, 2);          // rear bottom
+  ctx.lineTo(12, 2);          // belly
+  ctx.lineTo(20, 0);          // nose tip
+  ctx.lineTo(12, -3);         // nose top
+  ctx.lineTo(-8, -3);         // cockpit top
+  ctx.lineTo(-20, -1);        // tail top
+  ctx.closePath();
   ctx.stroke();
 
-  // Top wing
+  // ── Cockpit canopy ──
+  ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(-12, -8);
-  ctx.lineTo(14, -8);
-  ctx.lineTo(16, -6);
+  ctx.moveTo(0, -3);
+  ctx.quadraticCurveTo(2, -6, 6, -3);
+  ctx.stroke();
+
+  // ── Top wing (above fuselage) ──
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-10, -7);
+  ctx.lineTo(12, -7);
+  ctx.lineTo(14, -6);
   ctx.lineTo(-10, -6);
   ctx.closePath();
   ctx.stroke();
 
-  // Bottom wing
+  // ── Bottom wing (below fuselage) ──
   ctx.beginPath();
-  ctx.moveTo(-10, 2);
-  ctx.lineTo(14, 2);
-  ctx.lineTo(16, 4);
-  ctx.lineTo(-8, 4);
+  ctx.moveTo(-8, 4);
+  ctx.lineTo(12, 4);
+  ctx.lineTo(14, 5);
+  ctx.lineTo(-8, 5);
   ctx.closePath();
   ctx.stroke();
 
-  // Wing struts
+  // ── Wing struts ──
+  ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(-4, -8);
-  ctx.lineTo(-4, 4);
-  ctx.moveTo(8, -8);
-  ctx.lineTo(8, 4);
+  ctx.moveTo(-2, -7);
+  ctx.lineTo(-2, 5);
+  ctx.moveTo(8, -7);
+  ctx.lineTo(8, 5);
   ctx.stroke();
 
-  // Tail
+  // ── Tail fin (vertical stabilizer, points UP) ──
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.moveTo(-18, 0);
-  ctx.lineTo(-24, -6);
-  ctx.lineTo(-16, -6);
-  ctx.lineTo(-14, -4);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(-18, 0);
-  ctx.lineTo(-22, 4);
-  ctx.lineTo(-16, 4);
-  ctx.lineTo(-14, 2);
+  ctx.moveTo(-20, -1);
+  ctx.lineTo(-24, -7);
+  ctx.lineTo(-18, -7);
+  ctx.lineTo(-16, -3);
   ctx.stroke();
 
-  // Propeller
+  // ── Tail plane (horizontal stabilizer) ──
+  ctx.beginPath();
+  ctx.moveTo(-22, 0);
+  ctx.lineTo(-26, -1);
+  ctx.lineTo(-26, 1);
+  ctx.lineTo(-22, 1);
+  ctx.stroke();
+
+  // ── Landing gear (two small struts + wheels) ──
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, 5);
+  ctx.lineTo(-1, 9);
+  ctx.moveTo(8, 5);
+  ctx.lineTo(7, 9);
+  // Axle
+  ctx.moveTo(-2, 9);
+  ctx.lineTo(8, 9);
+  ctx.stroke();
+  // Wheels
+  ctx.beginPath();
+  ctx.arc(-1, 10, 1.5, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(7, 10, 1.5, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // ── Propeller (spinning) ──
   ctx.lineWidth = 2;
-  const pt = Date.now() * 0.02;
+  ctx.strokeStyle = color;
+  const pt = Date.now() * 0.03;
+  const pLen = 7;
   ctx.beginPath();
-  ctx.moveTo(22, -6 * Math.sin(pt));
-  ctx.lineTo(22, 6 * Math.sin(pt));
+  ctx.moveTo(20, -pLen * Math.sin(pt));
+  ctx.lineTo(20, pLen * Math.sin(pt));
+  ctx.stroke();
+
+  // ── Engine cowling (nose cap) ──
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(18, -3);
+  ctx.lineTo(18, 2);
   ctx.stroke();
 
   clearGlow(ctx);
