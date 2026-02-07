@@ -397,6 +397,7 @@ function initPlayer() {
     autopilot: false,
     // Input edge detection
     _turnHeld: false,
+    _turnTimer: 0,
     _flipHeld: false,
     _autoHeld: false,
     // Frame counter for speed updates (every 4 frames like original)
@@ -717,19 +718,36 @@ function updatePlayer(dt) {
 
     // Nose up (Comma or ArrowUp) — INCREMENT angle index toward 4
     if (keys['Comma'] || keys['ArrowUp']) {
-      if (!p._turnHeld || (p.moveCount % 3 === 0)) {
+      if (!p._turnHeld) {
+        // First press: immediate step
         p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
         p._turnHeld = true;
+        p._turnTimer = 0;
+      } else {
+        // Held: step every 10 frames (~166ms at 60fps)
+        p._turnTimer++;
+        if (p._turnTimer >= 10) {
+          p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+          p._turnTimer = 0;
+        }
       }
     }
     // Nose down (Slash or ArrowDown) — DECREMENT angle index toward 12 via 0→15→14...
     else if (keys['Slash'] || keys['ArrowDown']) {
-      if (!p._turnHeld || (p.moveCount % 3 === 0)) {
+      if (!p._turnHeld) {
         p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
         p._turnHeld = true;
+        p._turnTimer = 0;
+      } else {
+        p._turnTimer++;
+        if (p._turnTimer >= 10) {
+          p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
+          p._turnTimer = 0;
+        }
       }
     } else {
       p._turnHeld = false;
+      p._turnTimer = 0;
     }
 
     // Flip (Period or F)
