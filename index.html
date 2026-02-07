@@ -40,8 +40,10 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0f;font-family:
 @media (hover:none) and (pointer:coarse){
   #touch-zone{display:block !important}
   #touch-actions{display:flex !important}
-  #touch-start{display:block !important}
+  #touch-start.visible{display:block !important}
+  #touch-start:not(.visible){display:none !important}
   #touch-pitch-indicator{display:block !important}
+  #radar{height:60px}
 }
 </style>
 </head>
@@ -53,7 +55,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0f;font-family:
     <!-- Touch: full-screen gesture zone (hold=throttle, drag=pitch) -->
     <div id="touch-zone"></div>
     <!-- Touch: start/retry button -->
-    <div id="touch-start">TAP TO START</div>
+    <div id="touch-start" class="visible">TAP TO START</div>
     <!-- Touch: pitch indicator -->
     <div id="touch-pitch-indicator"><div id="touch-pitch-dot"></div></div>
     <!-- Touch: action buttons (right side) -->
@@ -92,7 +94,7 @@ function resize() {
   canvas.width = gd.clientWidth;
   canvas.height = gd.clientHeight;
   radarCanvas.width = radarCanvas.parentElement ? radarCanvas.clientWidth || window.innerWidth : window.innerWidth;
-  radarCanvas.height = 40;
+  radarCanvas.height = radarCanvas.clientHeight || 40;
 }
 resize();
 window.addEventListener('resize', resize);
@@ -163,7 +165,7 @@ if (touchStartBtn) {
     e.preventDefault();
     keys['Enter'] = true;
     setTimeout(() => { keys['Enter'] = false; }, 100);
-    touchStartBtn.style.display = 'none';
+    touchStartBtn.classList.remove('visible');
     initAudio();
   });
 }
@@ -1758,16 +1760,17 @@ function handleInput() {
       lives = 5;
       initLevel();
       state = ST.PLAYING;
-      // Hide touch start button, show controls
-      if (touchStartBtn) touchStartBtn.style.display = 'none';
+      if (touchStartBtn) touchStartBtn.classList.remove('visible');
     }
   }
 
-  // Show touch start on title/game over screens
+  // Show/hide touch start button based on game state
   if (isTouchDevice && touchStartBtn) {
     if (state === ST.TITLE || state === ST.GAME_OVER) {
-      touchStartBtn.style.display = 'block';
+      touchStartBtn.classList.add('visible');
       touchStartBtn.textContent = state === ST.TITLE ? 'TAP TO START' : 'TAP TO RETRY';
+    } else {
+      touchStartBtn.classList.remove('visible');
     }
   }
 }
