@@ -1788,14 +1788,15 @@ function updatePlayer(dt) {
   if (!p.landed) {
     const effAngle = getEffectiveAngle(p);
 
-    // Speed update every 3 frames (slightly faster than original for responsiveness)
-    if (p.moveCount % 3 === 0) {
+    // Speed update every 4 frames (gradual, prevents sudden speed loss)
+    if (p.moveCount % 4 === 0) {
       const grav = GRAVITY_TABLE[effAngle];
       const targetSpeed = PLANE_MIN_SPEED + p.accel + grav;
       if (p.speed < targetSpeed) p.speed++;
       else if (p.speed > targetSpeed) p.speed--;
       if (p.speed > PLANE_MAX_SPEED) p.speed = PLANE_MAX_SPEED;
-      if (p.speed < 1 && p.accel > 0) p.speed = 1; // throttle prevents total speed loss
+      // With throttle applied, never drop below minimum flight speed
+      if (p.accel > 0 && p.speed < PLANE_MIN_SPEED) p.speed = PLANE_MIN_SPEED;
     }
 
     // Stall: speed too low (only in normal flight, not when burning)
