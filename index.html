@@ -112,6 +112,28 @@ const ENEMY_SPEED = 200;
 const ENEMY_FIRE_INTERVAL = 60;
 const BASE_WIDTH = 120;
 
+// ── Enemy type constants ──
+const JET_SPEED = 340;
+const JET_FIRE_INTERVAL = 35;
+const BOMBER_SPEED = 140;
+const BOMBER_BOMB_INTERVAL = 120;
+const ZEPPELIN_SPEED = 60;
+const ZEPPELIN_BOMB_INTERVAL = 80;
+
+const ENEMY_SPECS = {
+  biplane: { hp: 2, speed: 200, fireInterval: ENEMY_FIRE_INTERVAL, score: 300, color: '#f0a', hitW: 20, hitH: 12 },
+  jet:     { hp: 2, speed: JET_SPEED, fireInterval: JET_FIRE_INTERVAL, score: 500, color: '#f55', hitW: 20, hitH: 12 },
+  bomber:  { hp: 4, speed: BOMBER_SPEED, fireInterval: BOMBER_BOMB_INTERVAL, score: 700, color: '#fa0', hitW: 30, hitH: 15 },
+  zeppelin:{ hp: 8, speed: ZEPPELIN_SPEED, fireInterval: ZEPPELIN_BOMB_INTERVAL, score: 1500, color: '#aaf', hitW: 50, hitH: 20 }
+};
+
+// ── Building score/spec lookup ──
+const buildingScores = { flak: 200, factory: 300, hangar: 100, dam: 500, radar_station: 250, fuel_depot: 200, bunker: 150 };
+const buildingColors = { flak: '#f80', factory: '#f44', hangar: '#fa0', dam: '#48f', radar_station: '#af0', fuel_depot: '#f80', bunker: '#888' };
+
+// ── Enemy accuracy debuff (from radar station destruction) ──
+let enemyAccuracyDebuff = 0;
+
 // ── Sopwith-style flight model ──
 // 16 discrete angles (like original), speed scalar, gravity table
 const NUM_ANGLES = 16;
@@ -321,6 +343,25 @@ function playBombDrop() {
   } catch(e) {}
 }
 
+function playFlood() {
+  if (!audioCtx) return;
+  try {
+    const dur = 0.8;
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * dur, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) {
+      const t = i / audioCtx.sampleRate;
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - t / dur, 0.8) * Math.sin(t * 30);
+    }
+    const src = audioCtx.createBufferSource();
+    const g = audioCtx.createGain();
+    src.buffer = buf;
+    g.gain.value = 0.25;
+    src.connect(g); g.connect(audioCtx.destination);
+    src.start();
+  } catch(e) {}
+}
+
 // ── Stars (background) ──
 const stars = [];
 for (let i = 0; i < 200; i++) {
@@ -375,6 +416,7 @@ function getTerrainY(x) {
 
 // ── Entities ──
 let player, bullets, bombs, particles, enemies, buildings, flakShots, birds, oxen;
+let fleeingPeople, dragons;
 
 function initPlayer() {
   const ty = getTerrainY(baseX + BASE_WIDTH / 2);
@@ -385,7 +427,7 @@ function initPlayer() {
     speed: 0,             // current speed (in Sopwith units)
     accel: 0,             // throttle acceleration (0 to PLANE_MAX_ACCEL)
     angleIdx: 0,          // 0=right, 4=up, 8=left, 12=down (16 steps)
-    flipped: false,       // facing left (mirrors angle)
+    orient: false,        // upside-down (true = inverted, like ob_orient in original Sopwith)
     stalled: false,       // in stall state
     // Derived velocity (for rendering/collision)
     vx: 0, vy: 0,
@@ -409,7 +451,21 @@ function initPlayer() {
 
 function spawnBuildings() {
   buildings = [];
-  const types = ['hangar', 'factory', 'flak'];
+  // Weighted type pool based on level
+  const pool = [];
+  const addW = (t, w) => { for (let i = 0; i < w; i++) pool.push(t); };
+  addW('hangar', 3); addW('factory', 3); addW('flak', 3);
+  if (level >= 2) { addW('bunker', 2); addW('fuel_depot', 2); }
+  if (level >= 3) { addW('radar_station', 1); addW('dam', 1); }
+
+  const sizeMap = {
+    hangar: [50, 30], factory: [60, 40], flak: [30, 45],
+    dam: [100, 25], radar_station: [40, 50], fuel_depot: [45, 30], bunker: [35, 20]
+  };
+  const hpMap = {
+    hangar: 2, factory: 3, flak: 2, dam: 5, radar_station: 2, fuel_depot: 2, bunker: 4
+  };
+
   const minGap = 300;
   let lastX = baseX + BASE_WIDTH + 600;
   const count = 8 + level * 3;
@@ -417,16 +473,25 @@ function spawnBuildings() {
     const bx = lastX + minGap + Math.random() * 400;
     if (bx >= WORLD_W - 200) break;
     const ty = getTerrainY(bx);
-    const type = types[Math.floor(Math.random() * types.length)];
-    const w = type === 'factory' ? 60 : type === 'hangar' ? 50 : 30;
-    const h = type === 'factory' ? 40 : type === 'hangar' ? 30 : 45;
+    const type = pool[Math.floor(Math.random() * pool.length)];
+    const [w, h] = sizeMap[type];
     buildings.push({
       x: bx, y: ty - h, w, h, type,
-      hp: type === 'factory' ? 3 : 2,
+      hp: hpMap[type],
       alive: true,
       flakTimer: Math.random() * FLAK_INTERVAL | 0,
       isTarget: true
     });
+    // Dam: dip terrain on left side (reservoir effect)
+    if (type === 'dam') {
+      for (let dx = -150; dx < 0; dx++) {
+        const ix = Math.floor(((bx + dx) % WORLD_W + WORLD_W) % WORLD_W);
+        if (ix >= 0 && ix < WORLD_W) {
+          const factor = 1 - Math.abs(dx) / 150;
+          terrain[ix] += 8 * factor;
+        }
+      }
+    }
     lastX = bx + w;
   }
 }
@@ -434,25 +499,71 @@ function spawnBuildings() {
 function spawnEnemies() {
   enemies = [];
   const count = 1 + level;
+  let zeppelinCount = 0;
   for (let i = 0; i < count; i++) {
+    // Type selection by level
+    let type = 'biplane';
+    const r = Math.random();
+    if (level >= 5 && r < 0.10 && zeppelinCount < 1) { type = 'zeppelin'; zeppelinCount++; }
+    else if (level >= 3 && r < 0.25) type = 'bomber';
+    else if (level >= 2 && r < 0.50) type = 'jet';
+
+    const spec = ENEMY_SPECS[type];
     const ex = 2000 + Math.random() * (WORLD_W - 3000);
+    const ey = type === 'zeppelin' ? 50 + Math.random() * 30 :
+               type === 'bomber' ? 80 + Math.random() * 40 :
+               100 + Math.random() * 200;
     enemies.push({
-      x: ex, y: 100 + Math.random() * 200,
-      vx: -ENEMY_SPEED + Math.random() * 40, vy: 0,
+      x: ex, y: ey,
+      vx: -spec.speed + Math.random() * 40, vy: 0,
       angle: Math.PI,
-      hp: 2, alive: true,
-      fireTimer: Math.random() * ENEMY_FIRE_INTERVAL | 0
+      hp: spec.hp, alive: true,
+      fireTimer: Math.random() * spec.fireInterval | 0,
+      type,
+      speed: spec.speed,
+      stalled: false,
+      stallTimer: 0,
+      patrolDir: Math.random() < 0.5 ? 1 : -1
     });
   }
 }
 
-function spawnOxen() {
+function spawnAnimals() {
   oxen = [];
   const count = 3 + level;
   for (let i = 0; i < count; i++) {
-    const ox = 800 + Math.random() * (WORLD_W - 1000);
-    const ty = getTerrainY(ox);
-    oxen.push({ x: ox, y: ty - 10, w: 20, h: 10, alive: true, dir: Math.random() < 0.5 ? 1 : -1, speed: 15 + Math.random() * 10 });
+    const ax = 800 + Math.random() * (WORLD_W - 1000);
+    const ty = getTerrainY(ax);
+    // Pick animal type based on level
+    let type = 'ox';
+    const r = Math.random();
+    if (level >= 3 && r < 0.15) type = 'camel';
+    else if (level >= 2 && r < 0.35) type = 'horse';
+    else if (r < 0.55) type = 'sheep';
+
+    const sizeMap = { ox: [20, 10], sheep: [15, 7], horse: [22, 12], camel: [22, 11] };
+    const speedMap = { ox: [15, 10], sheep: [25, 10], horse: [40, 10], camel: [12, 6] };
+    const [w, h] = sizeMap[type];
+    const [spd, spdR] = speedMap[type];
+
+    if (type === 'sheep') {
+      // Cluster sheep in groups of 3-4
+      const groupSize = 3 + Math.floor(Math.random() * 2);
+      for (let j = 0; j < groupSize; j++) {
+        const sx = ax + j * 20 + Math.random() * 10;
+        const sty = getTerrainY(sx);
+        oxen.push({ x: sx, y: sty - h, w, h, alive: true, dir: Math.random() < 0.5 ? 1 : -1, speed: spd + Math.random() * spdR, type });
+      }
+    } else if (type === 'horse') {
+      // Horses run in pairs
+      for (let j = 0; j < 2; j++) {
+        const hx = ax + j * 30;
+        const hty = getTerrainY(hx);
+        oxen.push({ x: hx, y: hty - h, w, h, alive: true, dir: Math.random() < 0.5 ? 1 : -1, speed: spd + Math.random() * spdR, type });
+      }
+    } else {
+      oxen.push({ x: ax, y: ty - h, w, h, alive: true, dir: Math.random() < 0.5 ? 1 : -1, speed: spd + Math.random() * spdR, type: type || 'ox' });
+    }
   }
 }
 
@@ -461,12 +572,35 @@ function spawnBirds() {
   const count = 2 + level;
   for (let i = 0; i < count; i++) {
     const bx = Math.random() * WORLD_W;
-    const by = 60 + Math.random() * 200;
+    // Type selection: 50% sparrows, 30% geese, 20% eagles
+    const r = Math.random();
+    let type = 'sparrow';
+    if (r > 0.80) type = 'eagle';
+    else if (r > 0.50) type = 'goose';
+
     const flock = [];
-    for (let j = 0; j < 5; j++) {
-      flock.push({ x: bx + j * 12 + Math.random() * 8, y: by + Math.sin(j) * 10, alive: true });
+    if (type === 'eagle') {
+      // Solitary, higher altitude, wider sinusoidal
+      const by = 40 + Math.random() * 120;
+      flock.push({ x: bx, y: by, alive: true });
+      birds.push({ flock, vx: -25 - Math.random() * 15, vy: 0, type, sinAmp: 30 + Math.random() * 20, sinFreq: 0.002 });
+    } else if (type === 'goose') {
+      // V-formation
+      const by = 80 + Math.random() * 150;
+      for (let j = 0; j < 5; j++) {
+        const offX = j * 14;
+        const offY = Math.abs(j - 2) * 8; // V shape
+        flock.push({ x: bx + offX, y: by + offY, alive: true });
+      }
+      birds.push({ flock, vx: -30 - Math.random() * 20, vy: Math.sin(bx) * 3, type, sinAmp: 5, sinFreq: 0.005 });
+    } else {
+      // Sparrows - small, fast
+      const by = 60 + Math.random() * 200;
+      for (let j = 0; j < 5; j++) {
+        flock.push({ x: bx + j * 12 + Math.random() * 8, y: by + Math.sin(j) * 10, alive: true });
+      }
+      birds.push({ flock, vx: -40 - Math.random() * 30, vy: Math.sin(bx) * 5, type, sinAmp: 4, sinFreq: 0.01 });
     }
-    birds.push({ flock, vx: -40 - Math.random() * 30, vy: Math.sin(bx) * 5 });
   }
 }
 
@@ -477,10 +611,14 @@ function initLevel() {
   bombs = [];
   particles = [];
   flakShots = [];
+  fleeingPeople = [];
+  dragons = [];
+  enemyAccuracyDebuff = 0;
   spawnBuildings();
   spawnEnemies();
-  spawnOxen();
+  spawnAnimals();
   spawnBirds();
+  spawnDragons();
 }
 
 // ── Particle system ──
@@ -501,6 +639,86 @@ function addEngineTrail(x, y, vx, vy) {
   addParticle(x, y, vx * 0.1 + (Math.random() - 0.5) * 20, vy * 0.1 + (Math.random() - 0.5) * 20, 0.2 + Math.random() * 0.15, Math.random() < 0.5 ? '#0af' : '#08f', 1.5);
 }
 
+// ── Dragon spawning ──
+function spawnDragons() {
+  if (level >= 4 && Math.random() < 0.5) {
+    const dx = 3000 + Math.random() * (WORLD_W - 4000);
+    dragons.push({
+      x: dx, y: 100 + Math.random() * 100,
+      vx: 60, vy: 0,
+      hp: 3, alive: true,
+      phase: 'circling', // circling, diving, breathing
+      breathTimer: 5 + Math.random() * 5,
+      wingFrame: 0,
+      diveTarget: null,
+      breathParticles: []
+    });
+  }
+}
+
+// ── Fleeing people spawning ──
+function spawnFleeingPeople(x, groundY) {
+  const count = 2 + Math.floor(Math.random() * 3);
+  const colors = ['#0ff', '#f0f', '#ff0', '#0f0', '#fa0', '#f55'];
+  for (let i = 0; i < count; i++) {
+    fleeingPeople.push({
+      x: x + (Math.random() - 0.5) * 30,
+      y: groundY,
+      dir: Math.random() < 0.5 ? -1 : 1,
+      speed: 40 + Math.random() * 20,
+      life: 4 + Math.random(),
+      maxLife: 5,
+      frame: Math.random() * Math.PI * 2,
+      color: colors[Math.floor(Math.random() * colors.length)]
+    });
+  }
+}
+
+// ── Building destruction special effects ──
+function onBuildingDestroyed(bld) {
+  // Spawn fleeing people (except bunker)
+  if (bld.type !== 'bunker') {
+    spawnFleeingPeople(bld.x + bld.w / 2, bld.y + bld.h);
+  }
+
+  // Type-specific effects
+  if (bld.type === 'dam') {
+    // Flood effect: blue particles rushing rightward
+    for (let i = 0; i < 40; i++) {
+      addParticle(bld.x + bld.w / 2 + Math.random() * 40, bld.y + bld.h,
+        80 + Math.random() * 120, -20 + Math.random() * 40,
+        1.0 + Math.random() * 0.5, Math.random() < 0.5 ? '#48f' : '#0af', 3 + Math.random() * 2);
+    }
+    // Lower terrain downstream ~300px
+    for (let dx = 0; dx < 300; dx++) {
+      const ix = Math.floor(((bld.x + bld.w + dx) % WORLD_W + WORLD_W) % WORLD_W);
+      if (ix >= 0 && ix < WORLD_W) {
+        const factor = 1 - dx / 300;
+        terrain[ix] += (5 + Math.random() * 10) * factor;
+      }
+    }
+    playFlood();
+  } else if (bld.type === 'fuel_depot') {
+    // Chain explosion: massive explosion + damage nearby buildings
+    addExplosion(bld.x + bld.w / 2, bld.y + bld.h / 2, 60, true);
+    for (const other of buildings) {
+      if (!other.alive || other === bld) continue;
+      const dist = Math.abs((other.x + other.w / 2) - (bld.x + bld.w / 2));
+      if (dist < 150) {
+        other.hp -= 2;
+        if (other.hp <= 0) {
+          other.alive = false;
+          addExplosion(other.x + other.w / 2, other.y + other.h / 2, 20, true);
+          score += buildingScores[other.type] || 100;
+          if (other.type !== 'bunker') spawnFleeingPeople(other.x + other.w / 2, other.y + other.h);
+        }
+      }
+    }
+  } else if (bld.type === 'radar_station') {
+    enemyAccuracyDebuff = 15; // 15 seconds of doubled enemy fire intervals
+  }
+}
+
 // ── Drawing helpers ──
 function neonGlow(ctx, color, blur) {
   ctx.shadowColor = color;
@@ -511,12 +729,13 @@ function clearGlow(ctx) {
   ctx.shadowBlur = 0;
 }
 
-function drawBiplane(ctx, x, y, angle, flipped, color, scale) {
+function drawBiplane(ctx, x, y, angle, facingLeft, color, scale, upsideDown) {
   scale = scale || 1;
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);
-  if (flipped) ctx.scale(-1, 1);
+  if (facingLeft) ctx.scale(-1, 1);
+  if (upsideDown) ctx.scale(1, -1);
   ctx.scale(scale, scale);
 
   neonGlow(ctx, color, 8);
@@ -628,6 +847,422 @@ function drawBiplane(ctx, x, y, angle, flipped, color, scale) {
   ctx.restore();
 }
 
+function drawJet(ctx, x, y, angle, facingLeft, color, scale) {
+  scale = scale || 1;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  if (facingLeft) ctx.scale(-1, 1);
+  ctx.scale(scale, scale);
+
+  neonGlow(ctx, color, 8);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+
+  // Pointed triangular fuselage
+  ctx.beginPath();
+  ctx.moveTo(22, 0);          // nose tip
+  ctx.lineTo(-14, -4);        // top rear
+  ctx.lineTo(-18, -3);        // tail notch top
+  ctx.lineTo(-18, 3);         // tail notch bottom
+  ctx.lineTo(-14, 4);         // bottom rear
+  ctx.closePath();
+  ctx.stroke();
+
+  // Swept-back delta wings
+  ctx.beginPath();
+  ctx.moveTo(-2, -4);
+  ctx.lineTo(-14, -14);
+  ctx.lineTo(-10, -4);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-2, 4);
+  ctx.lineTo(-14, 14);
+  ctx.lineTo(-10, 4);
+  ctx.stroke();
+
+  // Bubble canopy
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(8, -3);
+  ctx.quadraticCurveTo(12, -6, 16, -3);
+  ctx.stroke();
+
+  // Vertical tail fin
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-16, -3);
+  ctx.lineTo(-20, -10);
+  ctx.lineTo(-14, -8);
+  ctx.stroke();
+
+  // Afterburner glow (pulsing)
+  const abPulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.02);
+  ctx.fillStyle = `rgba(255, ${Math.floor(160 * abPulse)}, 0, ${0.5 + abPulse * 0.5})`;
+  ctx.beginPath();
+  ctx.arc(-20, 0, 3 + abPulse * 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  clearGlow(ctx);
+  ctx.restore();
+}
+
+function drawBomber(ctx, x, y, angle, facingLeft, color, scale) {
+  scale = scale || 1;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  if (facingLeft) ctx.scale(-1, 1);
+  ctx.scale(scale, scale);
+
+  neonGlow(ctx, color, 8);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+
+  // Wider fuselage
+  ctx.beginPath();
+  ctx.moveTo(-22, 2);
+  ctx.lineTo(-10, 4);
+  ctx.lineTo(18, 3);
+  ctx.lineTo(24, 0);
+  ctx.lineTo(18, -4);
+  ctx.lineTo(-10, -4);
+  ctx.lineTo(-22, -2);
+  ctx.closePath();
+  ctx.stroke();
+
+  // Long straight wings
+  ctx.beginPath();
+  ctx.moveTo(-12, -4);
+  ctx.lineTo(14, -4);
+  ctx.lineTo(16, -5);
+  ctx.lineTo(-12, -5);
+  ctx.closePath();
+  ctx.stroke();
+  // Wing extension (wider span)
+  ctx.beginPath();
+  ctx.moveTo(-8, -5); ctx.lineTo(-8, -16);
+  ctx.moveTo(8, -5); ctx.lineTo(8, -16);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-8, 4); ctx.lineTo(-8, 16);
+  ctx.moveTo(8, 4); ctx.lineTo(8, 16);
+  ctx.stroke();
+
+  // Engine nacelles (rectangles under wings)
+  ctx.strokeRect(-4, -18, 6, 4);
+  ctx.strokeRect(-4, 14, 6, 4);
+
+  // Twin tail fins
+  ctx.beginPath();
+  ctx.moveTo(-20, -2);
+  ctx.lineTo(-24, -8);
+  ctx.lineTo(-18, -6);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-20, 2);
+  ctx.lineTo(-24, 8);
+  ctx.lineTo(-18, 6);
+  ctx.stroke();
+
+  // Bomb bay doors (dashed line underneath)
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(-6, 4);
+  ctx.lineTo(10, 4);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Two spinning propellers
+  ctx.lineWidth = 2;
+  const pt = Date.now() * 0.03;
+  const pLen = 5;
+  ctx.beginPath();
+  ctx.moveTo(-1, -18 - pLen * Math.sin(pt));
+  ctx.lineTo(-1, -18 + pLen * Math.sin(pt));
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-1, 18 - pLen * Math.sin(pt + 1));
+  ctx.lineTo(-1, 18 + pLen * Math.sin(pt + 1));
+  ctx.stroke();
+
+  clearGlow(ctx);
+  ctx.restore();
+}
+
+function drawZeppelin(ctx, x, y, angle, facingLeft, color, scale) {
+  scale = scale || 1;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  if (facingLeft) ctx.scale(-1, 1);
+  ctx.scale(scale, scale);
+
+  neonGlow(ctx, color, 8);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+
+  // Large elongated ellipse (envelope)
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 40, 10, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Internal frame lines
+  for (let fx = -20; fx <= 20; fx += 13) {
+    ctx.beginPath();
+    ctx.moveTo(fx, -9);
+    ctx.lineTo(fx, 9);
+    ctx.stroke();
+  }
+
+  // Gondola rectangle hanging below
+  ctx.strokeRect(-8, 12, 16, 6);
+  // Connection lines
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-6, 10); ctx.lineTo(-8, 12);
+  ctx.moveTo(6, 10); ctx.lineTo(8, 12);
+  ctx.stroke();
+
+  // Cross-shaped rear stabilizer fins
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-38, 0); ctx.lineTo(-46, -8);
+  ctx.moveTo(-38, 0); ctx.lineTo(-46, 8);
+  ctx.moveTo(-38, -5); ctx.lineTo(-46, 0);
+  ctx.moveTo(-38, 5); ctx.lineTo(-46, 0);
+  ctx.stroke();
+
+  clearGlow(ctx);
+  ctx.restore();
+}
+
+function drawDragon(ctx, dragon) {
+  const d = dragon;
+  ctx.save();
+  ctx.translate(d.x, d.y);
+
+  const wingFlap = Math.sin(d.wingFrame) * 0.4;
+  const facingLeft = d.vx < 0;
+  if (facingLeft) ctx.scale(-1, 1);
+
+  neonGlow(ctx, '#f40', 10);
+  ctx.strokeStyle = '#f40';
+  ctx.lineWidth = 2;
+
+  // Serpentine body (bezier curve)
+  ctx.beginPath();
+  ctx.moveTo(-25, 0);
+  ctx.bezierCurveTo(-15, -5, 0, 5, 15, 0);
+  ctx.bezierCurveTo(20, -2, 25, 0, 30, 2);
+  ctx.stroke();
+
+  // Head with horns and open jaw
+  ctx.beginPath();
+  ctx.moveTo(-25, 0);
+  ctx.lineTo(-32, -3);  // upper jaw
+  ctx.moveTo(-25, 0);
+  ctx.lineTo(-30, 3);   // lower jaw
+  // Horns
+  ctx.moveTo(-24, -2);
+  ctx.lineTo(-22, -8);
+  ctx.moveTo(-20, -3);
+  ctx.lineTo(-18, -9);
+  ctx.stroke();
+
+  // Eye
+  ctx.fillStyle = '#ff0';
+  ctx.beginPath();
+  ctx.arc(-26, -1, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Bat-like wings (triangular, animated flap)
+  ctx.strokeStyle = '#f40';
+  ctx.beginPath();
+  ctx.moveTo(-5, -2);
+  ctx.lineTo(-15, -18 + wingFlap * 20);
+  ctx.lineTo(5, -8 + wingFlap * 10);
+  ctx.lineTo(10, -2);
+  ctx.stroke();
+  // Wing membrane lines
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-10, -2);
+  ctx.lineTo(-12, -15 + wingFlap * 18);
+  ctx.moveTo(0, -2);
+  ctx.lineTo(-5, -12 + wingFlap * 14);
+  ctx.stroke();
+
+  // Tail trailing behind
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(30, 2);
+  ctx.quadraticCurveTo(38, 8, 42, 4);
+  ctx.lineTo(46, 6);
+  ctx.stroke();
+
+  // Fire breath when in breathing phase
+  if (d.phase === 'breathing') {
+    ctx.strokeStyle = '#ff0';
+    neonGlow(ctx, '#f80', 12);
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 5; i++) {
+      const fx = -32 - i * 4 - Math.random() * 3;
+      const fy = (Math.random() - 0.5) * (4 + i * 2);
+      ctx.beginPath();
+      ctx.arc(fx, fy, 1.5 + Math.random(), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  clearGlow(ctx);
+  ctx.restore();
+}
+
+function drawPerson(person) {
+  const p = person;
+  const alpha = p.life < 1 ? p.life : 1;
+  ctx.globalAlpha = alpha;
+  neonGlow(ctx, p.color, 4);
+  ctx.strokeStyle = p.color;
+  ctx.lineWidth = 1;
+
+  const legAnim = Math.sin(p.frame * 8) * 3;
+  const armAnim = Math.sin(p.frame * 6) * 2;
+
+  // Head
+  ctx.beginPath();
+  ctx.arc(p.x, p.y - 7, 1.5, 0, Math.PI * 2);
+  ctx.stroke();
+  // Body
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y - 5.5);
+  ctx.lineTo(p.x, p.y - 2);
+  ctx.stroke();
+  // Arms (waving)
+  ctx.beginPath();
+  ctx.moveTo(p.x - 2 - armAnim, p.y - 5);
+  ctx.lineTo(p.x, p.y - 4);
+  ctx.lineTo(p.x + 2 + armAnim, p.y - 5);
+  ctx.stroke();
+  // Legs (running)
+  ctx.beginPath();
+  ctx.moveTo(p.x - 1.5 - legAnim, p.y);
+  ctx.lineTo(p.x, p.y - 2);
+  ctx.lineTo(p.x + 1.5 + legAnim, p.y);
+  ctx.stroke();
+
+  clearGlow(ctx);
+  ctx.globalAlpha = 1;
+}
+
+function drawAnimal(animal) {
+  const o = animal;
+  const type = o.type || 'ox';
+  if (type === 'ox') {
+    drawOx(o);
+    return;
+  }
+
+  if (type === 'sheep') {
+    neonGlow(ctx, '#ddd', 6);
+    ctx.strokeStyle = '#ddd';
+    ctx.lineWidth = 1.5;
+    // Fluffy body (rounded rect with wavy top)
+    ctx.beginPath();
+    ctx.moveTo(o.x + 2, o.y + 2);
+    ctx.lineTo(o.x + 13, o.y + 2);
+    ctx.lineTo(o.x + 13, o.y + 6);
+    ctx.lineTo(o.x + 2, o.y + 6);
+    ctx.closePath();
+    ctx.stroke();
+    // Wavy top (fluffy)
+    ctx.beginPath();
+    ctx.moveTo(o.x + 2, o.y + 2);
+    for (let wx = 3; wx < 13; wx += 2) {
+      ctx.lineTo(o.x + wx, o.y + 2 - Math.sin(wx) * 1.5);
+    }
+    ctx.stroke();
+    // Legs
+    ctx.beginPath();
+    ctx.moveTo(o.x + 4, o.y + 6); ctx.lineTo(o.x + 4, o.y + 8);
+    ctx.moveTo(o.x + 11, o.y + 6); ctx.lineTo(o.x + 11, o.y + 8);
+    ctx.stroke();
+    // Head
+    const headX = o.dir > 0 ? o.x + 13 : o.x + 2;
+    ctx.beginPath();
+    ctx.arc(headX, o.y + 2, 2, 0, Math.PI * 2);
+    ctx.stroke();
+    clearGlow(ctx);
+  } else if (type === 'horse') {
+    neonGlow(ctx, '#a72', 6);
+    ctx.strokeStyle = '#a72';
+    ctx.lineWidth = 1.5;
+    // Body
+    ctx.strokeRect(o.x + 3, o.y + 2, 16, 6);
+    // Taller legs
+    ctx.beginPath();
+    ctx.moveTo(o.x + 5, o.y + 8); ctx.lineTo(o.x + 5, o.y + 12);
+    ctx.moveTo(o.x + 8, o.y + 8); ctx.lineTo(o.x + 8, o.y + 12);
+    ctx.moveTo(o.x + 15, o.y + 8); ctx.lineTo(o.x + 15, o.y + 12);
+    ctx.moveTo(o.x + 18, o.y + 8); ctx.lineTo(o.x + 18, o.y + 12);
+    ctx.stroke();
+    // Longer neck and head
+    const headX = o.dir > 0 ? o.x + 19 : o.x + 3;
+    const neckDir = o.dir > 0 ? 1 : -1;
+    ctx.beginPath();
+    ctx.moveTo(headX, o.y + 2);
+    ctx.lineTo(headX + neckDir * 3, o.y - 3);
+    ctx.lineTo(headX + neckDir * 7, o.y - 3);
+    ctx.lineTo(headX + neckDir * 7, o.y);
+    ctx.stroke();
+    // Mane
+    ctx.beginPath();
+    ctx.moveTo(headX + neckDir * 1, o.y);
+    ctx.lineTo(headX + neckDir * 4, o.y - 5);
+    ctx.stroke();
+    // Tail
+    const tailX = o.dir > 0 ? o.x + 3 : o.x + 19;
+    ctx.beginPath();
+    ctx.moveTo(tailX, o.y + 2);
+    ctx.quadraticCurveTo(tailX - neckDir * 5, o.y, tailX - neckDir * 4, o.y + 5);
+    ctx.stroke();
+    clearGlow(ctx);
+  } else if (type === 'camel') {
+    neonGlow(ctx, '#da8', 6);
+    ctx.strokeStyle = '#da8';
+    ctx.lineWidth = 1.5;
+    // Body
+    ctx.strokeRect(o.x + 3, o.y + 2, 16, 5);
+    // Humps (1-2 arcs on back)
+    ctx.beginPath();
+    ctx.arc(o.x + 8, o.y + 2, 3, Math.PI, 0);
+    ctx.arc(o.x + 15, o.y + 2, 2.5, Math.PI, 0);
+    ctx.stroke();
+    // Longer legs
+    ctx.beginPath();
+    ctx.moveTo(o.x + 5, o.y + 7); ctx.lineTo(o.x + 5, o.y + 12);
+    ctx.moveTo(o.x + 8, o.y + 7); ctx.lineTo(o.x + 8, o.y + 12);
+    ctx.moveTo(o.x + 15, o.y + 7); ctx.lineTo(o.x + 15, o.y + 12);
+    ctx.moveTo(o.x + 18, o.y + 7); ctx.lineTo(o.x + 18, o.y + 12);
+    ctx.stroke();
+    // Long neck
+    const headX = o.dir > 0 ? o.x + 19 : o.x + 3;
+    const neckDir = o.dir > 0 ? 1 : -1;
+    ctx.beginPath();
+    ctx.moveTo(headX, o.y + 2);
+    ctx.lineTo(headX + neckDir * 2, o.y - 5);
+    ctx.lineTo(headX + neckDir * 5, o.y - 5);
+    ctx.stroke();
+    // Head
+    ctx.beginPath();
+    ctx.arc(headX + neckDir * 5, o.y - 5, 2, 0, Math.PI * 2);
+    ctx.stroke();
+    clearGlow(ctx);
+  }
+}
+
 // ── Camera ──
 let camX = 0, camY = 0;
 
@@ -647,6 +1282,7 @@ let frameCount = 0;
 function update(dt) {
   frameCount++;
   if (state === ST.PLAYING) {
+    if (enemyAccuracyDebuff > 0) enemyAccuracyDebuff -= dt;
     updatePlayer(dt);
     updateBullets(dt);
     updateBombs(dt);
@@ -654,6 +1290,8 @@ function update(dt) {
     updateFlak(dt);
     updateBirds(dt);
     updateOxen(dt);
+    updateFleeingPeople(dt);
+    updateDragons(dt);
     updateParticles(dt);
     updateCamera();
     checkLevelComplete();
@@ -669,6 +1307,7 @@ function update(dt) {
         player.invincible = 3; // 3 seconds of invincibility after respawn
         // Clear hostile projectiles near spawn
         bullets = bullets.filter(b => b.friendly);
+        bombs = bombs.filter(b => b.friendly !== false);
         flakShots = [];
         state = ST.PLAYING;
       }
@@ -689,10 +1328,7 @@ function update(dt) {
 // "Nose up" = increment toward 4, "Nose down" = decrement toward 12 (via 0→15→14→13...)
 
 function getEffectiveAngle(p) {
-  // When flipped (facing left), mirror: right-side angles map to left-side
-  if (p.flipped) {
-    return (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
-  }
+  // angleIdx directly determines direction via COS/SIN tables — no mirroring needed
   return p.angleIdx;
 }
 
@@ -709,36 +1345,58 @@ function updatePlayer(dt) {
 
   // ── Autopilot: fly home ──
   if (p.autopilot) {
+    // Cancel orient — autopilot flies right-side-up
+    p.orient = false;
+
     const homeX = baseX + BASE_WIDTH / 2;
-    const dx = homeX - p.x;
+    // World-aware signed distance to home
+    let dx = homeX - p.x;
+    if (dx > WORLD_W / 2) dx -= WORLD_W;
+    if (dx < -WORLD_W / 2) dx += WORLD_W;
 
-    // Face toward home
-    if (dx > 50 && p.flipped) { p.flipped = false; p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES; }
-    if (dx < -50 && !p.flipped) { p.flipped = true; p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES; }
+    const absDx = Math.abs(dx);
+    // Desired heading: 0 = rightward, 8 = leftward
+    const targetHeading = dx > 0 ? 0 : 8;
 
-    p.accel = PLANE_MAX_ACCEL;
-
-    if (Math.abs(dx) > 80) {
-      // Level flight: move angleIdx toward 0
-      if (p.angleIdx > 0 && p.angleIdx <= 8) p.angleIdx--;
-      else if (p.angleIdx > 8) p.angleIdx++;
-      if (p.angleIdx >= NUM_ANGLES) p.angleIdx = 0;
+    if (absDx > 200) {
+      // Cruise phase: steer toward target heading, full throttle
+      p.accel = PLANE_MAX_ACCEL;
+      // Move angleIdx toward targetHeading via shortest path
+      if (p.angleIdx !== targetHeading) {
+        const diff = ((targetHeading - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
+        if (diff <= 8) p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+        else p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
+      }
     } else {
-      // Approach base
+      // Approach phase: level off at runway altitude, slow down
       const homeY = getTerrainY(homeX) - 12;
-      if (p.y > homeY + 5) {
-        // Too low, nose up
-        if (p.angleIdx < 4) p.angleIdx++;
-      } else if (p.y < homeY - 20) {
-        // Too high, nose down
-        if (p.angleIdx > 0 && p.angleIdx <= 4) p.angleIdx--;
-        else if (p.angleIdx === 0) p.angleIdx = 15;
-        else if (p.angleIdx > 12) p.angleIdx--;
+      const dyToHome = p.y - homeY;
+
+      // Ease off throttle as we approach
+      if (absDx < 100) {
+        if (p.accel > 1) p.accel--;
+      } else {
+        p.accel = PLANE_MAX_ACCEL - 1;
+      }
+
+      // Steer toward level flight heading
+      if (p.angleIdx !== targetHeading) {
+        const diff = ((targetHeading - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
+        if (diff <= 8) p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+        else p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
+      } else if (dyToHome > 10) {
+        // Too low (below runway), nose up slightly
+        p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+      } else if (dyToHome < -30) {
+        // Too high, nose down slightly
+        p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
       }
 
       // Landing check
       const groundY = getTerrainY(p.x);
-      if (p.y >= groundY - 15 && p.speed <= PLANE_MIN_SPEED + 2 && (p.angleIdx <= 1 || p.angleIdx >= 15)) {
+      const nearBase = p.x > baseX - 30 && p.x < baseX + BASE_WIDTH + 30;
+      const apLevelEnough = (p.angleIdx <= 1 || p.angleIdx >= 15 || (p.angleIdx >= 7 && p.angleIdx <= 9));
+      if (nearBase && p.y >= groundY - 15 && p.speed <= PLANE_MIN_SPEED + 2 && apLevelEnough) {
         p.landed = true;
         p.autopilot = false;
         p.speed = 0; p.accel = 0; p.angleIdx = 0;
@@ -760,32 +1418,35 @@ function updatePlayer(dt) {
       if (p.accel > 0) p.accel--;
     }
 
-    // Nose up (Comma or ArrowUp) — INCREMENT angle index toward 4
+    // Pitch: when orient=false, nose-up increments angleIdx; when orient=true, it decrements (inverted)
+    // This matches original Sopwith: if (ob->ob_orient) nangle -= update; else nangle += update;
+    const pitchUp = p.orient ? -1 : 1;
+    const pitchDown = p.orient ? 1 : -1;
+
+    // Nose up (Comma or ArrowUp)
     if (keys['Comma'] || keys['ArrowUp']) {
       if (!p._turnHeld) {
-        // First press: immediate step
-        p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+        p.angleIdx = ((p.angleIdx + pitchUp) + NUM_ANGLES) % NUM_ANGLES;
         p._turnHeld = true;
         p._turnTimer = 0;
       } else {
-        // Held: step every 10 frames (~166ms at 60fps)
         p._turnTimer++;
         if (p._turnTimer >= 10) {
-          p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+          p.angleIdx = ((p.angleIdx + pitchUp) + NUM_ANGLES) % NUM_ANGLES;
           p._turnTimer = 0;
         }
       }
     }
-    // Nose down (Slash or ArrowDown) — DECREMENT angle index toward 12 via 0→15→14...
+    // Nose down (Slash or ArrowDown)
     else if (keys['Slash'] || keys['ArrowDown']) {
       if (!p._turnHeld) {
-        p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
+        p.angleIdx = ((p.angleIdx + pitchDown) + NUM_ANGLES) % NUM_ANGLES;
         p._turnHeld = true;
         p._turnTimer = 0;
       } else {
         p._turnTimer++;
         if (p._turnTimer >= 10) {
-          p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
+          p.angleIdx = ((p.angleIdx + pitchDown) + NUM_ANGLES) % NUM_ANGLES;
           p._turnTimer = 0;
         }
       }
@@ -794,21 +1455,27 @@ function updatePlayer(dt) {
       p._turnTimer = 0;
     }
 
-    // Flip (Period or F)
+    // Flip (Period or F) — toggles upside-down orientation, does NOT change angleIdx or direction
     if (keys['Period'] || keys['KeyF']) {
-      if (!p._flipHeld) {
-        p.flipped = !p.flipped;
-        p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
+      if (!p._flipHeld && !p.landed) {
+        p.orient = !p.orient;
+        p.autopilot = false;
         p._flipHeld = true;
       }
     } else {
       p._flipHeld = false;
     }
 
-    // Autopilot (H)
+    // Autopilot (H) — toggle; any other manual input cancels it
     if (keys['KeyH']) {
-      if (!p._autoHeld) { p.autopilot = true; p._autoHeld = true; }
+      if (!p._autoHeld) { p.autopilot = !p.autopilot; p._autoHeld = true; }
     } else { p._autoHeld = false; }
+
+    // Cancel autopilot on any manual input (pitch, throttle, fire, bomb, flip)
+    if (p.autopilot && (keys['Comma'] || keys['Slash'] || keys['ArrowUp'] || keys['ArrowDown']
+        || keys['KeyX'] || keys['Backslash'] || keys['Backquote'] || keys['Space'] || keys['KeyB'])) {
+      p.autopilot = false;
+    }
 
     // Fire
     if (keys['Space'] && p.fireCooldown <= 0 && p.ammo > 0) {
@@ -825,7 +1492,7 @@ function updatePlayer(dt) {
 
     // Bomb
     if (keys['KeyB'] && p.bombCooldown <= 0 && p.bombCount > 0) {
-      bombs.push({ x: p.x, y: p.y + 5, vx: p.vx * BOMB_VXFRAC, vy: p.vy + 20, life: 5 });
+      bombs.push({ x: p.x, y: p.y + 5, vx: p.vx * BOMB_VXFRAC, vy: p.vy + 20, life: 5, friendly: true });
       p.bombCount--;
       p.bombCooldown = 0.4;
       playBombDrop();
@@ -855,12 +1522,10 @@ function updatePlayer(dt) {
     }
 
     if (p.stalled) {
-      // Nose drops toward "down" (index 12 for right-facing, 4 for left-facing)
+      // Nose drops toward "down" (angleIdx 12 = straight down)
       if (p.moveCount % 6 === 0) {
-        const downIdx = p.flipped ? 4 : 12;
-        if (p.angleIdx !== downIdx) {
-          // Find shortest path to downIdx
-          const diff = ((downIdx - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
+        if (p.angleIdx !== 12) {
+          const diff = ((12 - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
           if (diff <= 8) p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
           else p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
         }
@@ -913,13 +1578,14 @@ function updatePlayer(dt) {
     const groundY = getTerrainY(p.x);
     if (p.y >= groundY - 8) {
       const nearBase = p.x > baseX - 30 && p.x < baseX + BASE_WIDTH + 30;
-      // Level = angleIdx near 0 (either 0, 1, or 15)
-      const levelEnough = (p.angleIdx <= 1 || p.angleIdx >= 15);
+      // Level = angleIdx near 0 (rightward: 0,1,15) or near 8 (leftward: 7,8,9)
+      const levelEnough = (p.angleIdx <= 1 || p.angleIdx >= 15 || (p.angleIdx >= 7 && p.angleIdx <= 9));
       const slowEnough = p.speed <= PLANE_MIN_SPEED + 2;
 
-      if (nearBase && levelEnough && slowEnough && !p.stalled) {
+      if (nearBase && levelEnough && slowEnough && !p.stalled && !p.orient) {
         p.y = groundY - 8;
         p.vy = 0; p.vx = 0; p.speed = 0; p.accel = 0; p.angleIdx = 0;
+        p.orient = false;
         p.landed = true; p.stalled = false;
         p.fuel = MAX_FUEL; p.ammo = MAX_AMMO; p.bombCount = MAX_BOMBS;
       } else {
@@ -932,6 +1598,7 @@ function updatePlayer(dt) {
     if (keys['KeyX'] || keys['ArrowUp']) {
       p.landed = false;
       p.stalled = false;
+      p.orient = false;
       p.accel = PLANE_MAX_ACCEL;
       p.speed = PLANE_MAX_SPEED - 1;
       p.angleIdx = 2; // Slight nose-up: index 2 = climbing right at ~45°
@@ -979,7 +1646,7 @@ function updateBullets(dt) {
       continue;
     }
 
-    // Hit buildings
+    // Hit buildings (friendly bullets only)
     if (b.friendly) {
       for (const bld of buildings) {
         if (!bld.alive) continue;
@@ -989,14 +1656,21 @@ function updateBullets(dt) {
             bld.alive = false;
             addExplosion(bld.x + bld.w / 2, bld.y + bld.h / 2, 25, true);
             playBoom(true);
-            score += bld.type === 'flak' ? 200 : bld.type === 'factory' ? 300 : 100;
+            score += buildingScores[bld.type] || 100;
             // Terrain crater
             for (let dx = -20; dx <= 20; dx++) {
               const ix = Math.floor(((bld.x + bld.w / 2 + dx) % WORLD_W + WORLD_W) % WORLD_W);
               if (ix >= 0 && ix < WORLD_W) terrain[ix] += (20 - Math.abs(dx)) * 0.3;
             }
+            onBuildingDestroyed(bld);
           } else {
             addExplosion(b.x, b.y, 5, false);
+            // Dam hit: extra blue splash
+            if (bld.type === 'dam') {
+              for (let k = 0; k < 6; k++) {
+                addParticle(b.x, b.y, (Math.random()-0.5)*60, -30-Math.random()*40, 0.4, '#48f', 2);
+              }
+            }
           }
           bullets.splice(i, 1);
           break;
@@ -1004,17 +1678,38 @@ function updateBullets(dt) {
       }
     }
 
-    // Friendly bullets hit enemies
+    // Friendly bullets hit enemies (type-aware hitbox)
     if (b.friendly) {
       for (const en of enemies) {
         if (!en.alive) continue;
-        if (Math.abs(b.x - en.x) < 20 && Math.abs(b.y - en.y) < 12) {
+        const spec = ENEMY_SPECS[en.type] || ENEMY_SPECS.biplane;
+        if (Math.abs(b.x - en.x) < spec.hitW && Math.abs(b.y - en.y) < spec.hitH) {
           en.hp--;
           if (en.hp <= 0) {
             en.alive = false;
             addExplosion(en.x, en.y, 20, true);
             playBoom(false);
-            score += 500;
+            score += spec.score;
+          }
+          bullets.splice(i, 1);
+          break;
+        }
+      }
+    }
+
+    // Friendly bullets hit dragons
+    if (b.friendly) {
+      for (const d of dragons) {
+        if (!d.alive) continue;
+        if (Math.abs(b.x - d.x) < 25 && Math.abs(b.y - d.y) < 15) {
+          d.hp--;
+          if (d.hp <= 0) {
+            d.alive = false;
+            addExplosion(d.x, d.y, 40, true);
+            playBoom(true);
+            score += 1000;
+          } else {
+            addExplosion(b.x, b.y, 5, false);
           }
           bullets.splice(i, 1);
           break;
@@ -1051,17 +1746,29 @@ function updateBombs(dt) {
       hit = true;
     }
 
-    // Building hit
-    for (const bld of buildings) {
-      if (!bld.alive) continue;
-      if (b.x > bld.x - 5 && b.x < bld.x + bld.w + 5 && b.y > bld.y - 5 && b.y < bld.y + bld.h + 5) {
-        bld.hp -= 2;
-        if (bld.hp <= 0) {
-          bld.alive = false;
-          score += bld.type === 'flak' ? 200 : bld.type === 'factory' ? 300 : 100;
+    // Building hit (only player/friendly bombs damage buildings)
+    if (b.friendly !== false) {
+      for (const bld of buildings) {
+        if (!bld.alive) continue;
+        if (b.x > bld.x - 5 && b.x < bld.x + bld.w + 5 && b.y > bld.y - 5 && b.y < bld.y + bld.h + 5) {
+          bld.hp -= 2;
+          if (bld.hp <= 0) {
+            bld.alive = false;
+            score += buildingScores[bld.type] || 100;
+            onBuildingDestroyed(bld);
+          }
+          hit = true;
+          break;
         }
-        hit = true;
-        break;
+      }
+    }
+
+    // Enemy bombs hit player
+    if (b.friendly === false && player.invincible <= 0 && state === ST.PLAYING) {
+      if (Math.abs(b.x - player.x) < 20 && Math.abs(b.y - player.y) < 15) {
+        killPlayer();
+        bombs.splice(i, 1);
+        continue;
       }
     }
 
@@ -1080,68 +1787,174 @@ function updateBombs(dt) {
   }
 }
 
+function updateChaserEnemy(en, dt, playerSafe, turnRate, bulletSpeedMult) {
+  let dx, dy, dist, desiredAngle;
+  if (playerSafe) {
+    const patrolX = 3000 + ((en.x * 7) % 5000);
+    const patrolY = 150;
+    dx = patrolX - en.x;
+    dy = patrolY - en.y;
+    dist = Math.sqrt(dx * dx + dy * dy);
+    desiredAngle = Math.atan2(dy, dx);
+  } else {
+    dx = player.x - en.x;
+    dy = player.y - en.y;
+    dist = Math.sqrt(dx * dx + dy * dy);
+    desiredAngle = Math.atan2(dy, dx);
+  }
+
+  // Handle bird-strike stall for jets
+  if (en.stalled && en.stallTimer > 0) {
+    en.stallTimer -= dt;
+    en.speed = 40; // drastically reduced
+    en.angle += 0.3 * dt; // nose drops
+    if (en.stallTimer <= 0) { en.stalled = false; en.speed = ENEMY_SPECS[en.type].speed; }
+  }
+
+  let angleDiff = desiredAngle - en.angle;
+  while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+  while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+  en.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), turnRate * dt);
+
+  const spd = en.stalled ? 40 : en.speed;
+  en.vx = Math.cos(en.angle) * spd;
+  en.vy = Math.sin(en.angle) * spd;
+  en.x += en.vx * dt;
+  en.y += en.vy * dt;
+
+  const groundY = getTerrainY(en.x);
+  if (en.y > groundY - 40) en.y = groundY - 40;
+  if (en.y < 30) en.y = 30;
+
+  // Fire at player
+  const fireIntervalMult = enemyAccuracyDebuff > 0 ? 2 : 1;
+  en.fireTimer--;
+  if (en.fireTimer <= 0 && dist < 600 && !playerSafe) {
+    const bvx = Math.cos(en.angle) * BULLET_SPEED * bulletSpeedMult;
+    const bvy = Math.sin(en.angle) * BULLET_SPEED * bulletSpeedMult;
+    bullets.push({ x: en.x + Math.cos(en.angle) * 20, y: en.y + Math.sin(en.angle) * 20, vx: bvx, vy: bvy, life: 1.0, friendly: false });
+    en.fireTimer = (ENEMY_SPECS[en.type].fireInterval + Math.random() * 30 | 0) * fireIntervalMult;
+  }
+
+  return dist;
+}
+
+function updateBomberEnemy(en, dt, playerSafe) {
+  // Flies toward player's base area at high altitude, drops bombs
+  const targetX = playerSafe ? 6000 : baseX + BASE_WIDTH / 2;
+  const targetY = 80 + Math.sin(Date.now() * 0.001 + en.x * 0.01) * 40;
+
+  let dx = targetX - en.x;
+  let dy = targetY - en.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const desiredAngle = Math.atan2(dy, dx);
+
+  let angleDiff = desiredAngle - en.angle;
+  while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+  while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+  en.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), 1.0 * dt); // Slower turn
+
+  en.vx = Math.cos(en.angle) * en.speed;
+  en.vy = Math.sin(en.angle) * en.speed;
+  en.x += en.vx * dt;
+  en.y += en.vy * dt;
+
+  const groundY = getTerrainY(en.x);
+  if (en.y > groundY - 60) en.y = groundY - 60;
+  if (en.y < 50) en.y = 50;
+
+  // Drop bombs when above base area or near player
+  const fireIntervalMult = enemyAccuracyDebuff > 0 ? 2 : 1;
+  en.fireTimer--;
+  if (en.fireTimer <= 0 && !playerSafe) {
+    const nearBase = Math.abs(en.x - baseX - BASE_WIDTH / 2) < 300;
+    const nearPlayer = Math.abs(en.x - player.x) < 200;
+    if (nearBase || nearPlayer) {
+      bombs.push({ x: en.x, y: en.y + 10, vx: en.vx * 0.3, vy: 20, life: 5, friendly: false });
+      en.fireTimer = (BOMBER_BOMB_INTERVAL + Math.random() * 40 | 0) * fireIntervalMult;
+    }
+  }
+
+  return dist;
+}
+
+function updateZeppelinEnemy(en, dt) {
+  // Patrols left-right slowly, drops bombs periodically
+  en.x += en.patrolDir * en.speed * dt;
+  en.y = 50 + Math.sin(Date.now() * 0.0005 + en.x * 0.001) * 30;
+
+  // Reverse at world edges
+  if (en.x > WORLD_W - 500) en.patrolDir = -1;
+  if (en.x < 500) en.patrolDir = 1;
+
+  en.vx = en.patrolDir * en.speed;
+  en.vy = 0;
+  en.angle = en.patrolDir > 0 ? 0 : Math.PI;
+
+  const groundY = getTerrainY(en.x);
+  if (en.y > groundY - 80) en.y = groundY - 80;
+
+  // Drop 3 bombs in a spread periodically
+  const fireIntervalMult = enemyAccuracyDebuff > 0 ? 2 : 1;
+  en.fireTimer--;
+  if (en.fireTimer <= 0) {
+    for (let k = -1; k <= 1; k++) {
+      bombs.push({ x: en.x + k * 15, y: en.y + 20, vx: en.vx * 0.2 + k * 10, vy: 15, life: 6, friendly: false });
+    }
+    en.fireTimer = (ZEPPELIN_BOMB_INTERVAL + Math.random() * 30 | 0) * fireIntervalMult;
+  }
+
+  return Math.sqrt((player.x - en.x) ** 2 + (player.y - en.y) ** 2);
+}
+
 function updateEnemies(dt) {
   for (const en of enemies) {
     if (!en.alive) continue;
 
-    // Don't chase player if they are invincible (just respawned) or landed at base
     const playerSafe = player.invincible > 0 || player.landed;
+    let dist;
 
-    let dx, dy, dist, desiredAngle;
-    if (playerSafe) {
-      // Patrol: fly away from base, circle in the world
-      const patrolX = 3000 + ((en.x * 7) % 5000);
-      const patrolY = 150;
-      dx = patrolX - en.x;
-      dy = patrolY - en.y;
-      dist = Math.sqrt(dx * dx + dy * dy);
-      desiredAngle = Math.atan2(dy, dx);
+    if (en.type === 'zeppelin') {
+      dist = updateZeppelinEnemy(en, dt);
+    } else if (en.type === 'bomber') {
+      dist = updateBomberEnemy(en, dt, playerSafe);
+    } else if (en.type === 'jet') {
+      dist = updateChaserEnemy(en, dt, playerSafe, 2.5, 0.85);
     } else {
-      dx = player.x - en.x;
-      dy = player.y - en.y;
-      dist = Math.sqrt(dx * dx + dy * dy);
-      desiredAngle = Math.atan2(dy, dx);
+      dist = updateChaserEnemy(en, dt, playerSafe, 1.5, 0.7);
     }
-
-    // Adjust angle toward target
-    let angleDiff = desiredAngle - en.angle;
-    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-    while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-    en.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), 1.5 * dt);
-
-    en.vx = Math.cos(en.angle) * ENEMY_SPEED;
-    en.vy = Math.sin(en.angle) * ENEMY_SPEED;
-
-    en.x += en.vx * dt;
-    en.y += en.vy * dt;
-
-    // Keep above ground
-    const groundY = getTerrainY(en.x);
-    if (en.y > groundY - 40) en.y = groundY - 40;
-    if (en.y < 30) en.y = 30;
 
     // World wrap
     if (en.x < 0) en.x += WORLD_W;
     if (en.x >= WORLD_W) en.x -= WORLD_W;
 
-    // Fire at player (only when not safe)
-    en.fireTimer--;
-    if (en.fireTimer <= 0 && dist < 600 && !playerSafe) {
-      const bvx = Math.cos(en.angle) * BULLET_SPEED * 0.7;
-      const bvy = Math.sin(en.angle) * BULLET_SPEED * 0.7;
-      bullets.push({ x: en.x + Math.cos(en.angle) * 20, y: en.y + Math.sin(en.angle) * 20, vx: bvx, vy: bvy, life: 1.0, friendly: false });
-      en.fireTimer = ENEMY_FIRE_INTERVAL + Math.random() * 30 | 0;
-    }
-
-    // Engine trail
-    addParticle(en.x - Math.cos(en.angle) * 18, en.y - Math.sin(en.angle) * 18, -en.vx * 0.05, -en.vy * 0.05, 0.15, '#f0a', 1.5);
+    // Engine trail (color per type)
+    const trailColor = ENEMY_SPECS[en.type].color;
+    addParticle(en.x - Math.cos(en.angle) * 18, en.y - Math.sin(en.angle) * 18, -en.vx * 0.05, -en.vy * 0.05, 0.15, trailColor, 1.5);
 
     // Collision with player
     if (player.invincible <= 0 && state === ST.PLAYING) {
-      if (Math.abs(en.x - player.x) < 25 && Math.abs(en.y - player.y) < 15) {
+      const spec = ENEMY_SPECS[en.type];
+      if (Math.abs(en.x - player.x) < spec.hitW + 5 && Math.abs(en.y - player.y) < spec.hitH + 3) {
         en.alive = false;
         addExplosion(en.x, en.y, 20, true);
         killPlayer();
+      }
+    }
+
+    // Bird strike check for jet enemies
+    if (en.type === 'jet' && !en.stalled) {
+      for (const bg of birds) {
+        for (const bird of bg.flock) {
+          if (!bird.alive) continue;
+          if (Math.abs(bird.x - en.x) < 15 && Math.abs(bird.y - en.y) < 10) {
+            bird.alive = false;
+            addExplosion(bird.x, bird.y, 6, false);
+            en.stalled = true;
+            en.stallTimer = 3;
+            en.speed = 40;
+          }
+        }
       }
     }
   }
@@ -1200,16 +2013,27 @@ function updateBirds(dt) {
     for (const b of bg.flock) {
       if (!b.alive) continue;
       b.x += bg.vx * dt;
-      b.y += bg.vy * dt + Math.sin(Date.now() * 0.005 + b.x * 0.1) * 0.3;
+      const sinAmp = bg.sinAmp || 4;
+      const sinFreq = bg.sinFreq || 0.005;
+      b.y += bg.vy * dt + Math.sin(Date.now() * sinFreq + b.x * 0.1) * (sinAmp * 0.1);
 
       if (b.x < -100) b.x += WORLD_W + 200;
 
       // Collision with player
       if (player.invincible <= 0 && state === ST.PLAYING) {
-        if (Math.abs(b.x - player.x) < 15 && Math.abs(b.y - player.y) < 10) {
+        const hitRange = bg.type === 'eagle' ? 18 : bg.type === 'goose' ? 16 : 12;
+        if (Math.abs(b.x - player.x) < hitRange && Math.abs(b.y - player.y) < 10) {
           b.alive = false;
-          addExplosion(b.x, b.y, 8, false);
-          killPlayer();
+          if (bg.type === 'sparrow') {
+            // Sparrows: harmless to biplane, just feather particles
+            for (let k = 0; k < 8; k++) {
+              addParticle(b.x, b.y, (Math.random()-0.5)*40, (Math.random()-0.5)*40, 0.3, Math.random()<0.5?'#ddd':'#aaa', 1.5);
+            }
+          } else {
+            // Geese and eagles: lethal on contact
+            addExplosion(b.x, b.y, 8, false);
+            killPlayer();
+          }
         }
       }
     }
@@ -1245,6 +2069,99 @@ function updateParticles(dt) {
     p.vy += 40 * dt;
     p.life -= dt;
     if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+function updateFleeingPeople(dt) {
+  for (let i = fleeingPeople.length - 1; i >= 0; i--) {
+    const p = fleeingPeople[i];
+    p.x += p.dir * p.speed * dt;
+    p.y = getTerrainY(p.x);
+    p.frame += dt;
+    p.life -= dt;
+    if (p.life <= 0) fleeingPeople.splice(i, 1);
+  }
+}
+
+function updateDragons(dt) {
+  for (const d of dragons) {
+    if (!d.alive) continue;
+    d.wingFrame += dt * 5;
+
+    if (d.phase === 'circling') {
+      // Circle in the sky at mid-altitude
+      d.x += d.vx * dt;
+      d.y = 120 + Math.sin(Date.now() * 0.001 + d.x * 0.002) * 60;
+      d.vx = 60 * Math.sign(d.vx);
+
+      // Reverse at world edges
+      if (d.x > WORLD_W - 400) d.vx = -60;
+      if (d.x < 400) d.vx = 60;
+
+      d.breathTimer -= dt;
+      if (d.breathTimer <= 0) {
+        d.phase = 'diving';
+        d.diveTarget = { x: player.x, y: player.y };
+      }
+    } else if (d.phase === 'diving') {
+      // Dive toward ground
+      const dx = d.diveTarget.x - d.x;
+      const dy = (getTerrainY(d.diveTarget.x) - 50) - d.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      d.vx = (dx / (dist || 1)) * 120;
+      d.vy = (dy / (dist || 1)) * 120;
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+
+      if (dist < 80 || d.y > getTerrainY(d.x) - 40) {
+        d.phase = 'breathing';
+        d.breathTimer = 1.5;
+      }
+    } else if (d.phase === 'breathing') {
+      // Fire breath: spawn fire particles
+      d.vx *= 0.95;
+      d.vy *= 0.95;
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+
+      // Spawn fire particles in a cone
+      if (Math.random() < 0.4) {
+        const facingLeft = d.vx < 0;
+        const dir = facingLeft ? -1 : 1;
+        const fx = d.x + dir * 30;
+        const fy = d.y;
+        addParticle(fx, fy, dir * (80 + Math.random() * 60), (Math.random() - 0.5) * 40, 0.5, Math.random() < 0.5 ? '#f80' : '#ff0', 3);
+        // Check fire particle collision with player
+        if (player.invincible <= 0 && state === ST.PLAYING) {
+          if (Math.abs(fx - player.x) < 25 && Math.abs(fy - player.y) < 20) {
+            killPlayer();
+          }
+        }
+      }
+
+      d.breathTimer -= dt;
+      if (d.breathTimer <= 0) {
+        d.phase = 'circling';
+        d.breathTimer = 5 + Math.random() * 5;
+        d.vx = (Math.random() < 0.5 ? 1 : -1) * 60;
+        d.vy = 0;
+      }
+    }
+
+    // Keep above ground
+    const groundY = getTerrainY(d.x);
+    if (d.y > groundY - 30) d.y = groundY - 30;
+
+    // World wrap
+    if (d.x < 0) d.x += WORLD_W;
+    if (d.x >= WORLD_W) d.x -= WORLD_W;
+
+    // Collision with player (body)
+    if (player.invincible <= 0 && state === ST.PLAYING) {
+      if (Math.abs(d.x - player.x) < 25 && Math.abs(d.y - player.y) < 15) {
+        killPlayer();
+      }
+    }
   }
 }
 
@@ -1315,45 +2232,102 @@ function draw() {
     drawBuilding(bld);
   }
 
-  // Oxen
+  // Animals (oxen, sheep, horses, camels)
   for (const o of oxen) {
     if (!o.alive) continue;
     const screenX = o.x - camX;
     if (screenX < -50 || screenX > W + 50) continue;
-    drawOx(o);
+    drawAnimal(o);
   }
 
-  // Birds
+  // Fleeing people
+  for (const p of fleeingPeople) {
+    const screenX = p.x - camX;
+    if (screenX < -50 || screenX > W + 50) continue;
+    drawPerson(p);
+  }
+
+  // Birds (per-type rendering)
   for (const bg of birds) {
     for (const b of bg.flock) {
       if (!b.alive) continue;
       const screenX = b.x - camX;
       if (screenX < -50 || screenX > W + 50) continue;
-      neonGlow(ctx, '#aaf', 4);
-      ctx.strokeStyle = '#aaf';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      const wing = Math.sin(Date.now() * 0.01 + b.x) * 4;
-      ctx.moveTo(b.x - 6, b.y + wing);
-      ctx.lineTo(b.x, b.y);
-      ctx.lineTo(b.x + 6, b.y + wing);
-      ctx.stroke();
-      clearGlow(ctx);
+
+      if (bg.type === 'eagle') {
+        // Wide wingspan, brown, slower soaring animation
+        const col = '#a72';
+        neonGlow(ctx, col, 5);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.5;
+        const wing = Math.sin(Date.now() * 0.004 + b.x) * 5;
+        ctx.beginPath();
+        ctx.moveTo(b.x - 14, b.y + wing);
+        ctx.lineTo(b.x - 4, b.y + wing * 0.3);
+        ctx.lineTo(b.x, b.y);
+        ctx.lineTo(b.x + 4, b.y + wing * 0.3);
+        ctx.lineTo(b.x + 14, b.y + wing);
+        ctx.stroke();
+        // Body/tail
+        ctx.beginPath();
+        ctx.moveTo(b.x, b.y);
+        ctx.lineTo(b.x + 5, b.y + 1);
+        ctx.stroke();
+        clearGlow(ctx);
+      } else if (bg.type === 'goose') {
+        // Larger V-shape, thicker lines
+        const col = '#dda';
+        neonGlow(ctx, col, 4);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.5;
+        const wing = Math.sin(Date.now() * 0.008 + b.x) * 5;
+        ctx.beginPath();
+        ctx.moveTo(b.x - 10, b.y + wing);
+        ctx.lineTo(b.x, b.y);
+        ctx.lineTo(b.x + 10, b.y + wing);
+        ctx.stroke();
+        // Body dot
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+        clearGlow(ctx);
+      } else {
+        // Sparrows: small, fast V-shape
+        neonGlow(ctx, '#aaf', 4);
+        ctx.strokeStyle = '#aaf';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const wing = Math.sin(Date.now() * 0.01 + b.x) * 4;
+        ctx.moveTo(b.x - 6, b.y + wing);
+        ctx.lineTo(b.x, b.y);
+        ctx.lineTo(b.x + 6, b.y + wing);
+        ctx.stroke();
+        clearGlow(ctx);
+      }
     }
+  }
+
+  // Dragons
+  for (const d of dragons) {
+    if (!d.alive) continue;
+    const screenX = d.x - camX;
+    if (screenX < -100 || screenX > W + 100) continue;
+    drawDragon(ctx, d);
   }
 
   // Bombs
   for (const b of bombs) {
     const screenX = b.x - camX;
     if (screenX < -50 || screenX > W + 50) continue;
-    neonGlow(ctx, '#fa0', 6);
-    ctx.fillStyle = '#fa0';
+    const bombCol = b.friendly === false ? '#f55' : '#fa0';
+    neonGlow(ctx, bombCol, 6);
+    ctx.fillStyle = bombCol;
     ctx.beginPath();
     ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
     ctx.fill();
     clearGlow(ctx);
-    // Trail
-    addParticle(b.x, b.y - 2, 0, -10, 0.15, '#f80', 1);
+    addParticle(b.x, b.y - 2, 0, -10, 0.15, b.friendly === false ? '#f55' : '#f80', 1);
   }
 
   // Flak shots
@@ -1379,19 +2353,31 @@ function draw() {
     clearGlow(ctx);
   }
 
-  // Enemies
+  // Enemies (dispatch by type)
   for (const en of enemies) {
     if (!en.alive) continue;
     const screenX = en.x - camX;
-    if (screenX < -100 || screenX > W + 100) continue;
-    const flipped = en.vx < 0;
-    drawBiplane(ctx, en.x, en.y, en.angle, flipped, '#f0a');
+    const margin = en.type === 'zeppelin' ? 150 : 100;
+    if (screenX < -margin || screenX > W + margin) continue;
+    const enFacingLeft = en.vx < 0;
+    const spec = ENEMY_SPECS[en.type];
+    if (en.type === 'jet') {
+      drawJet(ctx, en.x, en.y, en.angle, enFacingLeft, spec.color);
+    } else if (en.type === 'bomber') {
+      drawBomber(ctx, en.x, en.y, en.angle, enFacingLeft, spec.color);
+    } else if (en.type === 'zeppelin') {
+      drawZeppelin(ctx, en.x, en.y, en.angle, enFacingLeft, spec.color);
+    } else {
+      drawBiplane(ctx, en.x, en.y, en.angle, enFacingLeft, spec.color, undefined, false);
+    }
   }
 
   // Player
   if (state === ST.PLAYING) {
     if (player.invincible <= 0 || Math.sin(Date.now() * 0.02) > 0) {
-      drawBiplane(ctx, player.x, player.y, getPlaneRadians(player), player.flipped, '#0ff');
+      const pAngle = getEffectiveAngle(player);
+      const pFacingLeft = pAngle >= 5 && pAngle <= 11;
+      drawBiplane(ctx, player.x, player.y, getPlaneRadians(player), pFacingLeft, '#0ff', undefined, player.orient);
     }
   }
 
@@ -1445,8 +2431,13 @@ function draw() {
     ctx.fillText(`+${1000 * level} bonus points`, W / 2, H / 2 + 20);
   }
 
-  // Radar
+  // Top strip radar
   drawRadar();
+
+  // Circular radar scope (HUD overlay)
+  if (state === ST.PLAYING || state === ST.LEVEL_COMPLETE) {
+    drawRadarScope(W, H);
+  }
 }
 
 function drawTerrain(W, H) {
@@ -1518,35 +2509,100 @@ function drawBase() {
 }
 
 function drawBuilding(bld) {
-  const col = bld.type === 'flak' ? '#f80' : bld.type === 'factory' ? '#f44' : '#fa0';
+  const col = buildingColors[bld.type] || '#fa0';
   neonGlow(ctx, col, 8);
   ctx.strokeStyle = col;
   ctx.lineWidth = 1.5;
   ctx.strokeRect(bld.x, bld.y, bld.w, bld.h);
 
-  // Inner detail
+  // Inner detail per type
   if (bld.type === 'factory') {
-    // Chimney
     ctx.strokeRect(bld.x + bld.w - 10, bld.y - 15, 8, 15);
-    // Smoke particle occasionally
     if (Math.random() < 0.05) {
       addParticle(bld.x + bld.w - 6, bld.y - 15, (Math.random() - 0.5) * 10, -20, 0.5, '#555', 2);
     }
   } else if (bld.type === 'flak') {
-    // Gun barrel
     ctx.beginPath();
     ctx.moveTo(bld.x + bld.w / 2, bld.y);
     ctx.lineTo(bld.x + bld.w / 2, bld.y - 12);
     ctx.stroke();
-    // Cross
     ctx.beginPath();
     ctx.moveTo(bld.x + bld.w / 2 - 6, bld.y - 10);
     ctx.lineTo(bld.x + bld.w / 2 + 6, bld.y - 10);
     ctx.stroke();
-  } else {
-    // Hangar door
+  } else if (bld.type === 'hangar') {
     ctx.beginPath();
     ctx.arc(bld.x + bld.w / 2, bld.y + bld.h, bld.w * 0.35, Math.PI, 0);
+    ctx.stroke();
+  } else if (bld.type === 'dam') {
+    // Vertical buttress lines
+    for (let bx = bld.x + 15; bx < bld.x + bld.w - 10; bx += 20) {
+      ctx.beginPath();
+      ctx.moveTo(bx, bld.y);
+      ctx.lineTo(bx, bld.y + bld.h);
+      ctx.stroke();
+    }
+    // Wavy water line on upstream (left) side
+    ctx.strokeStyle = '#0af';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let wx = bld.x - 40; wx < bld.x; wx += 3) {
+      const wy = bld.y + bld.h - 5 + Math.sin(Date.now() * 0.004 + wx * 0.2) * 3;
+      if (wx === bld.x - 40) ctx.moveTo(wx, wy);
+      else ctx.lineTo(wx, wy);
+    }
+    ctx.stroke();
+    // Label
+    ctx.strokeStyle = col;
+    ctx.fillStyle = col;
+    ctx.font = '7px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('DAM', bld.x + bld.w / 2, bld.y + bld.h / 2 + 3);
+  } else if (bld.type === 'radar_station') {
+    // Base rectangle already drawn
+    // Antenna mast
+    const cx = bld.x + bld.w / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, bld.y);
+    ctx.lineTo(cx, bld.y - 20);
+    ctx.stroke();
+    // Rotating dish (animated arc)
+    const dishAngle = (Date.now() * 0.003) % (Math.PI * 2);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, bld.y - 20, 8, dishAngle, dishAngle + Math.PI * 0.6);
+    ctx.stroke();
+    ctx.lineWidth = 1.5;
+  } else if (bld.type === 'fuel_depot') {
+    // Cylindrical tank shapes (arcs) inside
+    for (let t = 0; t < 3; t++) {
+      const tx = bld.x + 8 + t * 13;
+      ctx.beginPath();
+      ctx.arc(tx, bld.y + bld.h, 8, Math.PI, 0);
+      ctx.stroke();
+    }
+    // Diagonal hazard stripes
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(bld.x, bld.y + bld.h);
+    ctx.lineTo(bld.x + bld.w, bld.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Occasional orange smoke
+    if (Math.random() < 0.03) {
+      addParticle(bld.x + bld.w / 2, bld.y, (Math.random()-0.5)*8, -15, 0.4, '#f80', 2);
+    }
+  } else if (bld.type === 'bunker') {
+    // Rounded top (arc)
+    ctx.beginPath();
+    ctx.arc(bld.x + bld.w / 2, bld.y, bld.w / 2, Math.PI, 0);
+    ctx.stroke();
+    // Gun slit
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(bld.x + 5, bld.y + 5);
+    ctx.lineTo(bld.x + bld.w - 5, bld.y + 5);
     ctx.stroke();
   }
 
@@ -1555,7 +2611,7 @@ function drawBuilding(bld) {
     ctx.fillStyle = col;
     ctx.font = '8px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('●'.repeat(bld.hp), bld.x + bld.w / 2, bld.y - 4);
+    ctx.fillText('●'.repeat(Math.min(bld.hp, 8)), bld.x + bld.w / 2, bld.y - 4);
   }
   clearGlow(ctx);
 }
@@ -1698,18 +2754,27 @@ function drawRadar() {
   rctx.fillStyle = '#0af';
   rctx.fillRect(baseX * scale - 1, 2, Math.max(3, BASE_WIDTH * scale), 4);
 
-  // Buildings
+  // Buildings (color-coded by type)
   for (const bld of buildings) {
     if (!bld.alive) continue;
-    rctx.fillStyle = bld.type === 'flak' ? '#f80' : '#f44';
+    rctx.fillStyle = buildingColors[bld.type] || '#f44';
     rctx.fillRect(bld.x * scale, rH * 0.4, Math.max(2, bld.w * scale), 3);
   }
 
-  // Enemies
+  // Enemies (color-coded by type)
   for (const en of enemies) {
     if (!en.alive) continue;
-    rctx.fillStyle = '#f0a';
-    rctx.fillRect(en.x * scale - 1, en.y * scale * 0.05 + 5, 3, 3);
+    const spec = ENEMY_SPECS[en.type];
+    rctx.fillStyle = spec.color;
+    const sz = en.type === 'zeppelin' ? 5 : 3;
+    rctx.fillRect(en.x * scale - 1, en.y * scale * 0.05 + 5, sz, sz);
+  }
+
+  // Dragons
+  for (const d of dragons) {
+    if (!d.alive) continue;
+    rctx.fillStyle = '#f40';
+    rctx.fillRect(d.x * scale - 2, d.y * scale * 0.05 + 5, 4, 4);
   }
 
   // Player
@@ -1735,6 +2800,234 @@ function drawRadarEmpty() {
   rctx.font = '10px "Courier New", monospace';
   rctx.textAlign = 'center';
   rctx.fillText('RADAR', rW / 2, rH / 2 + 3);
+}
+
+// ── Circular radar scope (in-game HUD) ──
+let radarSweepAngle = 0;
+
+function drawRadarScope(W, H) {
+  const R = Math.min(W, H) * 0.12;         // radius scales with screen
+  const cx = 20 + R + 8;                     // center X (bottom-left)
+  const cy = H - 20 - R - 8;                // center Y
+  const RANGE = 1200;                        // world-unit detection range
+
+  // Player heading in canvas radians (0=right, CW positive)
+  // getPlaneRadians: 0=right, negative=up. We want "forward = up on scope"
+  // so rotate everything by -(heading + PI/2)
+  const heading = getPlaneRadians(player);
+  const rot = -(heading + Math.PI / 2);      // offset so forward points up
+
+  // ── Background ──
+  ctx.save();
+  ctx.globalAlpha = 0.7;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R + 6, 0, Math.PI * 2);
+  ctx.fillStyle = '#040810';
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // Clip to circle
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, R + 1, 0, Math.PI * 2);
+  ctx.clip();
+
+  // ── Sweep fade trail (ghosting effect) ──
+  // Draw a translucent dark fill to create persistence-of-vision
+  ctx.fillStyle = 'rgba(4, 8, 16, 0.15)';
+  ctx.fillRect(cx - R - 2, cy - R - 2, (R + 2) * 2, (R + 2) * 2);
+
+  // ── Sweep line ──
+  radarSweepAngle += 0.03;
+  if (radarSweepAngle > Math.PI * 2) radarSweepAngle -= Math.PI * 2;
+  const sweepAng = radarSweepAngle + rot;
+
+  // Sweep gradient (bright leading edge, fading trail)
+  const sweepGrad = ctx.createConicalGradient
+    ? null  // not widely supported
+    : null;
+
+  // Draw sweep as a filled wedge with gradient
+  ctx.globalAlpha = 0.35;
+  for (let i = 0; i < 12; i++) {
+    const a0 = sweepAng - (i + 1) * 0.05;
+    const a1 = sweepAng - i * 0.05;
+    const alpha = 0.35 * (1 - i / 12);
+    ctx.fillStyle = `rgba(0, 255, 128, ${alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, R, a0, a1);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Bright sweep line
+  neonGlow(ctx, '#0f8', 6);
+  ctx.strokeStyle = '#0fa';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + Math.cos(sweepAng) * R, cy + Math.sin(sweepAng) * R);
+  ctx.stroke();
+  clearGlow(ctx);
+
+  // ── Range rings ──
+  ctx.strokeStyle = 'rgba(0, 180, 80, 0.2)';
+  ctx.lineWidth = 0.5;
+  for (let ring = 1; ring <= 3; ring++) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * ring / 3, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // ── Crosshair lines ──
+  ctx.strokeStyle = 'rgba(0, 180, 80, 0.15)';
+  ctx.beginPath();
+  ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+  ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
+  ctx.stroke();
+
+  // ── Plot blips ──
+  // Helper: world pos → scope pos (rotated relative to player)
+  function toScope(wx, wy) {
+    let dx = wx - player.x;
+    let dy = wy - player.y;
+    // Handle world wrapping
+    if (dx > WORLD_W / 2) dx -= WORLD_W;
+    if (dx < -WORLD_W / 2) dx += WORLD_W;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > RANGE) return null;
+    // Rotate by rot so forward = up
+    const cos = Math.cos(rot);
+    const sin = Math.sin(rot);
+    const rx = dx * cos - dy * sin;
+    const ry = dx * sin + dy * cos;
+    const scale = R / RANGE;
+    return { x: cx + rx * scale, y: cy + ry * scale, dist };
+  }
+
+  // Helper: draw a blip with glow
+  function drawBlip(sx, sy, color, size) {
+    neonGlow(ctx, color, 6);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(sx, sy, size, 0, Math.PI * 2);
+    ctx.fill();
+    clearGlow(ctx);
+  }
+
+  // Enemies
+  for (const en of enemies) {
+    if (!en.alive) continue;
+    const p = toScope(en.x, en.y);
+    if (!p) continue;
+    const spec = ENEMY_SPECS[en.type];
+    const sz = en.type === 'zeppelin' ? 3 : 2;
+    drawBlip(p.x, p.y, spec.color, sz);
+  }
+
+  // Dragons
+  for (const d of dragons) {
+    if (!d.alive) continue;
+    const p = toScope(d.x, d.y);
+    if (!p) continue;
+    drawBlip(p.x, p.y, '#f40', 2.5);
+  }
+
+  // Flak buildings (threat sources)
+  for (const bld of buildings) {
+    if (!bld.alive) continue;
+    if (bld.type !== 'flak') continue;
+    const p = toScope(bld.x + bld.w / 2, bld.y);
+    if (!p) continue;
+    // Square blip for ground threats
+    ctx.fillStyle = '#f80';
+    ctx.globalAlpha = 0.6;
+    ctx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
+    ctx.globalAlpha = 1;
+  }
+
+  // Bird flocks (goose/eagle only — dangerous ones)
+  for (const bg of birds) {
+    if (bg.type === 'sparrow') continue;
+    // Use first alive bird as flock position
+    const leader = bg.flock.find(b => b.alive);
+    if (!leader) continue;
+    const p = toScope(leader.x, leader.y);
+    if (!p) continue;
+    ctx.fillStyle = bg.type === 'eagle' ? '#a72' : '#dda';
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Flak shots (incoming)
+  for (const f of flakShots) {
+    const p = toScope(f.x, f.y);
+    if (!p) continue;
+    ctx.fillStyle = '#ff0';
+    ctx.globalAlpha = 0.4;
+    ctx.fillRect(p.x - 0.5, p.y - 0.5, 1, 1);
+    ctx.globalAlpha = 1;
+  }
+
+  // Enemy bombs (incoming)
+  for (const b of bombs) {
+    if (b.friendly !== false) continue;
+    const p = toScope(b.x, b.y);
+    if (!p) continue;
+    ctx.fillStyle = '#f55';
+    ctx.globalAlpha = 0.5;
+    ctx.fillRect(p.x - 1, p.y - 1, 2, 2);
+    ctx.globalAlpha = 1;
+  }
+
+  // ── Player center dot ──
+  neonGlow(ctx, '#0ff', 8);
+  ctx.fillStyle = '#0ff';
+  ctx.beginPath();
+  ctx.arc(cx, cy, 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Small forward tick (nose direction)
+  ctx.strokeStyle = '#0ff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - 4);
+  ctx.lineTo(cx, cy - 8);
+  ctx.stroke();
+  clearGlow(ctx);
+
+  ctx.restore(); // end clip
+
+  // ── Bezel ring ──
+  neonGlow(ctx, '#0a4', 4);
+  ctx.strokeStyle = '#0a4';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R + 3, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Outer thin ring
+  ctx.strokeStyle = '#052';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R + 6, 0, Math.PI * 2);
+  ctx.stroke();
+  clearGlow(ctx);
+
+  // ── Label ──
+  ctx.fillStyle = '#0a4';
+  ctx.globalAlpha = 0.6;
+  ctx.font = '8px "Courier New", monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('RDR', cx, cy + R + 14);
+  ctx.globalAlpha = 1;
+
+  ctx.restore(); // end save from top
 }
 
 // ── Game loop ──
@@ -1790,6 +3083,8 @@ setInterval(updateEngineSound, 50);
 
 // ── Start ──
 particles = [];
+fleeingPeople = [];
+dragons = [];
 generateTerrain();
 requestAnimationFrame(gameLoop);
 
