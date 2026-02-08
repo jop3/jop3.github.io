@@ -2483,6 +2483,15 @@ function updateBirds(dt) {
       const sinFreq = bg.sinFreq || 0.005;
       b.y += bg.vy * dt + Math.sin(Date.now() * sinFreq + b.x * 0.1) * (sinAmp * 0.1);
 
+      // Keep birds above terrain
+      const groundY = getTerrainY(b.x);
+      if (b.y > groundY - 30) {
+        b.y = groundY - 30;
+        bg.vy = -Math.abs(bg.vy) - 5; // bounce upward
+      }
+      // Keep above top of screen
+      if (b.y < 20) { b.y = 20; bg.vy = Math.abs(bg.vy || 1); }
+
       // Reverse direction at world edges
       if (b.x < 50) { b.x = 50; bg.vx = Math.abs(bg.vx); }
       if (b.x >= WORLD_W - 50) { b.x = WORLD_W - 50; bg.vx = -Math.abs(bg.vx); }
@@ -2920,8 +2929,12 @@ function draw() {
   // Player
   if (state === ST.PLAYING) {
     if (player.invincible <= 0 || Math.sin(Date.now() * 0.02) > 0) {
-      const pAngle = getEffectiveAngle(player);
-      const pFacingLeft = pAngle >= 5 && pAngle <= 11;
+      // Same approach as enemies: extract facingLeft from radian angle, mirror rotation
+      let pRad = getPlaneRadians(player);
+      while (pRad > Math.PI) pRad -= Math.PI * 2;
+      while (pRad < -Math.PI) pRad += Math.PI * 2;
+      const pFacingLeft = Math.abs(pRad) > Math.PI / 2;
+      const pDrawAngle = pFacingLeft ? (pRad > 0 ? pRad - Math.PI : pRad + Math.PI) : pRad;
       // Color changes with damage: cyan → yellow → red → burning
       let pColor = '#0ff';
       if (player.burning) pColor = '#f44';
@@ -2929,7 +2942,7 @@ function draw() {
       else if (player.hp <= 1) pColor = '#f80';
       // Hit flash override
       if (player.hitFlash > 0) pColor = '#fff';
-      drawBiplane(ctx, player.x, player.y, getPlaneRadians(player), pFacingLeft, pColor, undefined, player.orient);
+      drawBiplane(ctx, player.x, player.y, pDrawAngle, pFacingLeft, pColor, undefined, player.orient);
     }
   }
 
