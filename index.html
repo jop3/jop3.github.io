@@ -154,7 +154,7 @@ const ANGLE_STEP = (Math.PI * 2) / NUM_ANGLES;
 // Gravity effect per angle index (tuned from original Sopwith)
 // Nose up = negative (slows you), nose down = positive (speeds you up)
 // Reduced climb penalties so plane can maintain speed in moderate climbs
-const GRAVITY_TABLE = [0, -1, -1, -2, -3, -2, -1, -1, 0, 1, 2, 3, 4, 3, 2, 1];
+const GRAVITY_TABLE = [0, 0, -1, -1, -2, -1, -1, 0, 0, 1, 1, 2, 3, 2, 1, 1];
 // Sine table (scaled to 1.0 instead of 256 as original)
 const SIN_TABLE = [0, 0.383, 0.707, 0.924, 1.0, 0.924, 0.707, 0.383, 0, -0.383, -0.707, -0.924, -1.0, -0.924, -0.707, -0.383];
 const COS_TABLE = SIN_TABLE.map((_, i) => SIN_TABLE[(i + 4) % 16]);
@@ -163,7 +163,7 @@ const PLANE_MIN_SPEED = 4;    // Minimum speed (like original)
 const PLANE_MAX_SPEED = 9;    // Maximum speed
 const PLANE_MAX_ACCEL = 5;    // Maximum throttle acceleration
 const PIXELS_PER_UNIT = 28;   // Scale factor: Sopwith speed units → pixel velocity
-const STALL_SPEED = 3;        // Below this speed, plane stalls
+const STALL_SPEED = 2;        // Below this speed, plane stalls
 const TURN_RATE = 1;          // Angle steps per input (1 = one notch per press)
 const PROJ_GRAVITY = 300;     // Gravity for projectiles (pixels/s²)
 
@@ -634,7 +634,11 @@ function spawnEnemies() {
     else if (level >= 2 && r < 0.50) type = 'jet';
 
     const spec = ENEMY_SPECS[type];
-    const ex = 2000 + Math.random() * (WORLD_W - 3000);
+    // Spawn at world edges, far from base at center
+    // Pick left edge (0-1500) or right edge (WORLD_W-1500 to WORLD_W) randomly
+    const ex = Math.random() < 0.5
+      ? 200 + Math.random() * 1300
+      : WORLD_W - 1500 + Math.random() * 1300;
     const ey = type === 'zeppelin' ? 50 + Math.random() * 30 :
                type === 'bomber' ? 80 + Math.random() * 40 :
                100 + Math.random() * 200;
@@ -1587,9 +1591,11 @@ function updatePlayer(dt) {
       p._turnTimer = 0;
     }
 
-    // Flip (Period or F) — toggles upside-down orientation, does NOT change angleIdx or direction
+    // Flip (Period or F) — reverses direction: mirrors angleIdx horizontally AND toggles orient
     if (keys['Period'] || keys['KeyF']) {
       if (!p._flipHeld && !p.landed) {
+        // Mirror angleIdx: 0↔8, 1↔7, 2↔6, 3↔5, etc. (horizontal flip)
+        p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
         p.orient = !p.orient;
         p.autopilot = false;
         p._flipHeld = true;
@@ -1699,11 +1705,17 @@ function updatePlayer(dt) {
     if (p.x < 0) p.x += WORLD_W;
     if (p.x >= WORLD_W) p.x -= WORLD_W;
 
-    // Ceiling
+    // Ceiling — bounce off, lose speed but don't kill it entirely
     if (p.y < -50) {
       p.y = -50;
-      p.stalled = true;
-      p.speed = 0;
+      p.vy = Math.abs(p.vy) * 0.3; // push back down gently
+      // Bleed speed but keep enough to recover
+      p.speed = Math.max(PLANE_MIN_SPEED, Math.floor(p.speed * 0.5));
+      // Nudge nose downward to help recovery
+      if (p.angleIdx >= 2 && p.angleIdx <= 6) {
+        // Pointing upward — push toward level
+        p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+      }
     }
 
     // Ground collision
@@ -1896,12 +1908,8 @@ function updateBombs(dt) {
 
     let hit = false;
 
-    // Ground hit
-    if (b.y >= getTerrainY(b.x)) {
-      hit = true;
-    }
-
-    // Building hit (only player/friendly bombs damage buildings)
+    // Building hit FIRST (only player/friendly bombs damage buildings)
+    // Must check before ground hit since buildings sit on terrain
     if (b.friendly !== false) {
       for (const bld of buildings) {
         if (!bld.alive) continue;
@@ -1934,6 +1942,11 @@ function updateBombs(dt) {
           break;
         }
       }
+    }
+
+    // Ground hit (checked after buildings so bombs can hit structures on terrain)
+    if (!hit && b.y >= getTerrainY(b.x)) {
+      hit = true;
     }
 
     // Enemy bombs hit player
@@ -2585,21 +2598,21 @@ function draw() {
   }
 
   // Enemies (dispatch by type)
+  // Enemy angle is a radian that already points in travel direction — no facingLeft needed
   for (const en of enemies) {
     if (!en.alive) continue;
     const screenX = en.x - camX;
     const margin = en.type === 'zeppelin' ? 150 : 100;
     if (screenX < -margin || screenX > W + margin) continue;
-    const enFacingLeft = en.vx < 0;
     const spec = ENEMY_SPECS[en.type];
     if (en.type === 'jet') {
-      drawJet(ctx, en.x, en.y, en.angle, enFacingLeft, spec.color);
+      drawJet(ctx, en.x, en.y, en.angle, false, spec.color);
     } else if (en.type === 'bomber') {
-      drawBomber(ctx, en.x, en.y, en.angle, enFacingLeft, spec.color);
+      drawBomber(ctx, en.x, en.y, en.angle, false, spec.color);
     } else if (en.type === 'zeppelin') {
-      drawZeppelin(ctx, en.x, en.y, en.angle, enFacingLeft, spec.color);
+      drawZeppelin(ctx, en.x, en.y, en.angle, false, spec.color);
     } else {
-      drawBiplane(ctx, en.x, en.y, en.angle, enFacingLeft, spec.color, undefined, false);
+      drawBiplane(ctx, en.x, en.y, en.angle, false, spec.color, undefined, false);
     }
   }
 
