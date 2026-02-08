@@ -22,11 +22,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0f;font-family:
 .hud-val.red{color:#f55;text-shadow:0 0 6px #f55}
 .hud-val.green{color:#0fa;text-shadow:0 0 6px #0fa}
 .fuel-bar{width:80px;height:8px;background:#112;border:1px solid #335;border-radius:2px;overflow:hidden;display:inline-block;vertical-align:middle;position:relative}
-.fuel-fill{height:100%;background:linear-gradient(90deg,#0f0,#0ff);transition:width 0.2s}
+.fuel-fill{display:block;height:100%;background:linear-gradient(90deg,#0f0,#0ff);transition:width 0.2s}
 .fuel-bar.warning .fuel-fill{animation:bar-flash 0.5s ease-in-out infinite;background:linear-gradient(90deg,#f22,#f55)}
 .fuel-pct{font-size:9px;color:#8af;margin-left:4px;min-width:28px;display:inline-block;vertical-align:middle}
 .ammo-bar{width:70px;height:8px;background:#112;border:1px solid #335;border-radius:2px;overflow:hidden;display:inline-block;vertical-align:middle;position:relative}
-.ammo-fill{height:100%;background:linear-gradient(90deg,#ff0,#fa0);transition:width 0.2s}
+.ammo-fill{display:block;height:100%;background:linear-gradient(90deg,#ff0,#fa0);transition:width 0.2s}
 .ammo-bar.warning .ammo-fill{animation:bar-flash 0.5s ease-in-out infinite;background:linear-gradient(90deg,#f22,#f55)}
 .ammo-pct{font-size:9px;color:#8af;margin-left:4px;min-width:28px;display:inline-block;vertical-align:middle}
 @keyframes bar-flash{0%,100%{box-shadow:0 0 6px #f00 inset}50%{box-shadow:0 0 12px #f55 inset}}
@@ -429,6 +429,9 @@ function generateLandTerrain(groundBase) {
   }
   waterLineY = 0;
   islandPeaks = [];
+
+  // Barrier mountains at world edges
+  addBarrierMountains(groundBase);
 }
 
 function generateSeaTerrain(groundBase) {
@@ -480,6 +483,25 @@ function generateSeaTerrain(groundBase) {
       terrain[x] = carrierDeckY * (1 - t) + waterLineY * t;
     }
   }
+
+  // Barrier mountains at world edges
+  addBarrierMountains(waterLineY - 60);
+}
+
+function addBarrierMountains(groundBase) {
+  // Left barrier: tall mountain from x=0 to x=150
+  const barrierHeight = 350; // very tall — reaches above screen
+  const barrierWidth = 150;
+  for (let x = 0; x < barrierWidth; x++) {
+    const factor = Math.cos((x / barrierWidth) * Math.PI * 0.5);
+    terrain[x] = Math.min(terrain[x], groundBase - barrierHeight * factor * factor);
+  }
+  // Right barrier: tall mountain from x=WORLD_W-150 to WORLD_W
+  for (let x = WORLD_W - barrierWidth; x < WORLD_W; x++) {
+    const dx = WORLD_W - x;
+    const factor = Math.cos((dx / barrierWidth) * Math.PI * 0.5);
+    terrain[x] = Math.min(terrain[x], groundBase - barrierHeight * factor * factor);
+  }
 }
 
 function getTerrainY(x) {
@@ -487,6 +509,12 @@ function getTerrainY(x) {
   const ix2 = (ix + 1) % WORLD_W;
   const frac = x - Math.floor(x);
   return terrain[ix] * (1 - frac) + terrain[ix2] * frac;
+}
+
+// ── Base territory protection: no cratering within this zone ──
+function isInBaseTerritory(x) {
+  const margin = 80;
+  return x >= baseX - margin && x <= baseX + BASE_WIDTH + margin;
 }
 
 // ── Entities ──
@@ -621,8 +649,66 @@ function spawnBuildings() {
   }
 }
 
+// ── Enemy airfields ──
+const ENEMY_MAX_FUEL = 600;
+let enemyBases = []; // { x, width } — enemy landing fields
+
+function spawnEnemyBases() {
+  enemyBases = [];
+  // Left airfield near left edge (past barrier mountains)
+  const leftBaseX = 300;
+  const rightBaseX = WORLD_W - 300 - BASE_WIDTH;
+
+  // Flatten terrain at enemy bases
+  for (const bx of [leftBaseX, rightBaseX]) {
+    const flatY = getTerrainY(bx + BASE_WIDTH / 2);
+    for (let x = bx - 80; x < bx + BASE_WIDTH + 80; x++) {
+      if (x >= 0 && x < WORLD_W) {
+        if (x >= bx && x <= bx + BASE_WIDTH) terrain[x] = flatY;
+        else if (x < bx) {
+          const t = (bx - x) / 80;
+          terrain[x] = flatY * (1 - t) + terrain[x] * t;
+        } else {
+          const t = (x - bx - BASE_WIDTH) / 80;
+          terrain[x] = flatY * (1 - t) + terrain[x] * t;
+        }
+      }
+    }
+    enemyBases.push({ x: bx, width: BASE_WIDTH });
+  }
+}
+
+function drawEnemyBases() {
+  for (const eb of enemyBases) {
+    const by = getTerrainY(eb.x + eb.width / 2);
+    neonGlow(ctx, '#f55', 4);
+    ctx.strokeStyle = '#f55';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(eb.x, by);
+    ctx.lineTo(eb.x + eb.width, by);
+    ctx.stroke();
+    // Dashes
+    ctx.strokeStyle = '#a22';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([8, 8]);
+    ctx.beginPath();
+    ctx.moveTo(eb.x + 10, by - 3);
+    ctx.lineTo(eb.x + eb.width - 10, by - 3);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // Label
+    ctx.fillStyle = '#f55';
+    ctx.font = '8px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('ENEMY', eb.x + eb.width / 2, by - 8);
+    clearGlow(ctx);
+  }
+}
+
 function spawnEnemies() {
   enemies = [];
+  spawnEnemyBases();
   const count = 1 + level;
   let zeppelinCount = 0;
   for (let i = 0; i < count; i++) {
@@ -634,25 +720,30 @@ function spawnEnemies() {
     else if (level >= 2 && r < 0.50) type = 'jet';
 
     const spec = ENEMY_SPECS[type];
-    // Spawn at world edges, far from base at center
-    // Pick left edge (0-1500) or right edge (WORLD_W-1500 to WORLD_W) randomly
-    const ex = Math.random() < 0.5
-      ? 200 + Math.random() * 1300
-      : WORLD_W - 1500 + Math.random() * 1300;
-    const ey = type === 'zeppelin' ? 50 + Math.random() * 30 :
-               type === 'bomber' ? 80 + Math.random() * 40 :
-               100 + Math.random() * 200;
+    // Assign to an enemy base — alternate between left and right
+    const eb = enemyBases[i % enemyBases.length];
+    const ex = eb.x + eb.width / 2;
+    const ey = getTerrainY(ex) - 8;
+    // Direction: left base faces right, right base faces left
+    const facesRight = eb.x < WORLD_W / 2;
+
     enemies.push({
       x: ex, y: ey,
-      vx: -spec.speed + Math.random() * 40, vy: 0,
-      angle: Math.PI,
+      vx: 0, vy: 0,
+      angle: facesRight ? 0 : Math.PI,
       hp: spec.hp, alive: true,
       fireTimer: Math.random() * spec.fireInterval | 0,
       type,
       speed: spec.speed,
       stalled: false,
       stallTimer: 0,
-      patrolDir: Math.random() < 0.5 ? 1 : -1
+      patrolDir: facesRight ? 1 : -1,
+      // Airfield state
+      fuel: ENEMY_MAX_FUEL,
+      landed: true,
+      homeBase: eb,
+      takeoffTimer: 2 + Math.random() * 3 + i * 2, // stagger takeoffs
+      state: 'grounded' // grounded, flying, returning
     });
   }
 }
@@ -824,9 +915,11 @@ function onBuildingDestroyed(bld) {
         80 + Math.random() * 120, -20 + Math.random() * 40,
         1.0 + Math.random() * 0.5, Math.random() < 0.5 ? '#48f' : '#0af', 3 + Math.random() * 2);
     }
-    // Lower terrain downstream ~300px
+    // Lower terrain downstream ~300px (skip in base territory)
     for (let dx = 0; dx < 300; dx++) {
-      const ix = Math.floor(((bld.x + bld.w + dx) % WORLD_W + WORLD_W) % WORLD_W);
+      const worldX = bld.x + bld.w + dx;
+      if (isInBaseTerritory(worldX)) continue;
+      const ix = Math.floor(((worldX % WORLD_W) + WORLD_W) % WORLD_W);
       if (ix >= 0 && ix < WORLD_W) {
         const factor = 1 - dx / 300;
         terrain[ix] += (5 + Math.random() * 10) * factor;
@@ -1479,67 +1572,79 @@ function updatePlayer(dt) {
   const p = player;
   p.moveCount++;
 
-  // ── Autopilot: fly home ──
+  // ── Autopilot: tractor beam guided landing ──
   if (p.autopilot) {
-    // Cancel orient — autopilot flies right-side-up
-    p.orient = false;
-
     const homeX = baseX + BASE_WIDTH / 2;
-    // World-aware signed distance to home
-    let dx = homeX - p.x;
-    if (dx > WORLD_W / 2) dx -= WORLD_W;
-    if (dx < -WORLD_W / 2) dx += WORLD_W;
+    const homeY = getTerrainY(homeX) - 8;
+    const dx = homeX - p.x;
+    const dy = homeY - p.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
 
-    const absDx = Math.abs(dx);
-    // Desired heading: 0 = rightward, 8 = leftward
-    const targetHeading = dx > 0 ? 0 : 8;
-
-    if (absDx > 200) {
-      // Cruise phase: steer toward target heading, full throttle
+    // Phase 1: Cruise toward base — steer gently, keep speed
+    if (dist > 300) {
+      p.orient = false;
+      const targetHeading = dx > 0 ? 0 : 8;
       p.accel = PLANE_MAX_ACCEL;
-      // Move angleIdx toward targetHeading via shortest path
-      if (p.angleIdx !== targetHeading) {
+      // Gently steer toward target heading (1 step per 4 frames)
+      if (p.angleIdx !== targetHeading && p.moveCount % 4 === 0) {
         const diff = ((targetHeading - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
         if (diff <= 8) p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
         else p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
       }
-    } else {
-      // Approach phase: level off at runway altitude, slow down
-      const homeY = getTerrainY(homeX) - 12;
-      const dyToHome = p.y - homeY;
-
-      // Ease off throttle as we approach
-      if (absDx < 100) {
-        if (p.accel > 1) p.accel--;
-      } else {
-        p.accel = PLANE_MAX_ACCEL - 1;
+      // Altitude correction: climb if too low, descend if too high
+      const desiredAlt = homeY - 80;
+      if (p.y > desiredAlt + 30 && p.moveCount % 6 === 0) {
+        // Too low, nudge up
+        const up = p.orient ? -1 : 1;
+        p.angleIdx = ((p.angleIdx + up) + NUM_ANGLES) % NUM_ANGLES;
+      } else if (p.y < desiredAlt - 60 && p.moveCount % 6 === 0) {
+        // Too high, nudge down
+        const down = p.orient ? 1 : -1;
+        p.angleIdx = ((p.angleIdx + down) + NUM_ANGLES) % NUM_ANGLES;
       }
+    }
+    // Phase 2: Tractor beam capture — smooth interpolation to landing
+    // Bypasses normal physics entirely; the beam controls position
+    else {
+      p.orient = false;
+      p.stalled = false;
+      // Smoothly interpolate position toward the runway
+      const lerpRate = 0.02 * (60 * dt);  // ~2% per frame at 60fps
+      p.x += (homeX - p.x) * lerpRate;
+      p.y += (homeY - p.y) * lerpRate;
 
-      // Steer toward level flight heading
-      if (p.angleIdx !== targetHeading) {
-        const diff = ((targetHeading - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
+      // Smoothly level the plane
+      const targetAngle = dx > 0 ? 0 : 8;
+      if (p.angleIdx !== targetAngle && p.moveCount % 3 === 0) {
+        const diff = ((targetAngle - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
         if (diff <= 8) p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
         else p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
-      } else if (dyToHome > 10) {
-        // Too low (below runway), nose up slightly
-        p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
-      } else if (dyToHome < -30) {
-        // Too high, nose down slightly
-        p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
       }
 
-      // Landing check
-      const groundY = getTerrainY(p.x);
-      const nearBase = p.x > baseX - 30 && p.x < baseX + BASE_WIDTH + 30;
-      const apLevelEnough = (p.angleIdx <= 1 || p.angleIdx >= 15 || (p.angleIdx >= 7 && p.angleIdx <= 9));
-      if (nearBase && p.y >= groundY - 15 && p.speed <= PLANE_MIN_SPEED + 2 && apLevelEnough) {
+      // Reduce speed and zero velocity (beam controls position)
+      p.speed = Math.max(0, p.speed - 0.5);
+      p.accel = 0;
+      p.vx = 0;
+      p.vy = 0;
+
+      // Timers still tick
+      p.fireCooldown -= dt;
+      p.bombCooldown -= dt;
+      if (p.invincible > 0) p.invincible -= dt;
+      p.fuel -= dt * 5; // minimal fuel use during beam approach
+      if (p.fuel <= 0) p.fuel = 0;
+
+      // Landing: close enough to runway
+      const landDist = Math.sqrt((p.x - homeX) ** 2 + (p.y - homeY) ** 2);
+      if (landDist < 15) {
         p.landed = true;
         p.autopilot = false;
         p.speed = 0; p.accel = 0; p.angleIdx = 0;
-        p.vx = 0; p.vy = 0; p.y = groundY - 8;
+        p.vx = 0; p.vy = 0;
+        p.x = homeX; p.y = homeY;
         p.fuel = MAX_FUEL; p.ammo = MAX_AMMO; p.bombCount = MAX_BOMBS;
-        return;
       }
+      return; // Skip normal physics — beam handles everything
     }
   }
 
@@ -1701,9 +1806,9 @@ function updatePlayer(dt) {
       addEngineTrail(tx, ty, -p.vx * 0.3, -p.vy * 0.3);
     }
 
-    // World wrap
-    if (p.x < 0) p.x += WORLD_W;
-    if (p.x >= WORLD_W) p.x -= WORLD_W;
+    // Clamp at world edges (barrier mountains prevent passage)
+    if (p.x < 10) { p.x = 10; p.vx = Math.abs(p.vx) * 0.3; }
+    if (p.x >= WORLD_W - 10) { p.x = WORLD_W - 10; p.vx = -Math.abs(p.vx) * 0.3; }
 
     // Ceiling — bounce off, lose speed but don't kill it entirely
     if (p.y < -50) {
@@ -1754,11 +1859,13 @@ function updatePlayer(dt) {
 function killPlayer() {
   addExplosion(player.x, player.y, 40, true);
   playBoom(true);
-  // Crater in terrain
-  for (let dx = -30; dx <= 30; dx++) {
-    const ix = Math.floor(((player.x + dx) % WORLD_W + WORLD_W) % WORLD_W);
-    if (ix >= 0 && ix < WORLD_W) {
-      terrain[ix] += (30 - Math.abs(dx)) * 0.5;
+  // Crater in terrain (skip if inside home base territory)
+  if (!isInBaseTerritory(player.x)) {
+    for (let dx = -30; dx <= 30; dx++) {
+      const ix = Math.floor(((player.x + dx) % WORLD_W + WORLD_W) % WORLD_W);
+      if (ix >= 0 && ix < WORLD_W) {
+        terrain[ix] += (30 - Math.abs(dx)) * 0.5;
+      }
     }
   }
   lives--;
@@ -1774,9 +1881,8 @@ function updateBullets(dt) {
     b.vy += PROJ_GRAVITY * 0.3 * dt;
     b.life -= dt;
 
-    // World wrap
-    if (b.x < 0) b.x += WORLD_W;
-    if (b.x >= WORLD_W) b.x -= WORLD_W;
+    // Despawn at world edges
+    if (b.x < 0 || b.x >= WORLD_W) { bullets.splice(i, 1); continue; }
 
     // Ground hit
     if (b.y >= getTerrainY(b.x)) {
@@ -1801,10 +1907,12 @@ function updateBullets(dt) {
             addExplosion(bld.x + bld.w / 2, bld.y + bld.h / 2, 25, true);
             playBoom(true);
             score += buildingScores[bld.type] || 100;
-            // Terrain crater
-            for (let dx = -20; dx <= 20; dx++) {
-              const ix = Math.floor(((bld.x + bld.w / 2 + dx) % WORLD_W + WORLD_W) % WORLD_W);
-              if (ix >= 0 && ix < WORLD_W) terrain[ix] += (20 - Math.abs(dx)) * 0.3;
+            // Terrain crater (skip in base territory)
+            if (!isInBaseTerritory(bld.x + bld.w / 2)) {
+              for (let dx = -20; dx <= 20; dx++) {
+                const ix = Math.floor(((bld.x + bld.w / 2 + dx) % WORLD_W + WORLD_W) % WORLD_W);
+                if (ix >= 0 && ix < WORLD_W) terrain[ix] += (20 - Math.abs(dx)) * 0.3;
+              }
             }
             onBuildingDestroyed(bld);
           } else {
@@ -1903,8 +2011,8 @@ function updateBombs(dt) {
     }
     b.life -= dt;
 
-    if (b.x < 0) b.x += WORLD_W;
-    if (b.x >= WORLD_W) b.x -= WORLD_W;
+    // Despawn at world edges
+    if (b.x < 0 || b.x >= WORLD_W) { bombs.splice(i, 1); continue; }
 
     let hit = false;
 
@@ -1961,11 +2069,13 @@ function updateBombs(dt) {
     if (hit || b.life <= 0) {
       addExplosion(b.x, b.y, 30, true);
       playBoom(true);
-      // Crater
-      for (let dx = -40; dx <= 40; dx++) {
-        const ix = Math.floor(((b.x + dx) % WORLD_W + WORLD_W) % WORLD_W);
-        if (ix >= 0 && ix < WORLD_W) {
-          terrain[ix] += (40 - Math.abs(dx)) * 0.4;
+      // Crater (skip in base territory)
+      if (!isInBaseTerritory(b.x)) {
+        for (let dx = -40; dx <= 40; dx++) {
+          const ix = Math.floor(((b.x + dx) % WORLD_W + WORLD_W) % WORLD_W);
+          if (ix >= 0 && ix < WORLD_W) {
+            terrain[ix] += (40 - Math.abs(dx)) * 0.4;
+          }
         }
       }
       bombs.splice(i, 1);
@@ -2097,50 +2207,116 @@ function updateEnemies(dt) {
   for (const en of enemies) {
     if (!en.alive) continue;
 
-    const playerSafe = player.invincible > 0 || player.landed;
-    let dist;
-
-    if (en.type === 'zeppelin') {
-      dist = updateZeppelinEnemy(en, dt);
-    } else if (en.type === 'bomber') {
-      dist = updateBomberEnemy(en, dt, playerSafe);
-    } else if (en.type === 'jet') {
-      dist = updateChaserEnemy(en, dt, playerSafe, 2.5, 0.85);
-    } else {
-      dist = updateChaserEnemy(en, dt, playerSafe, 1.5, 0.7);
+    // ── Grounded state: wait, then take off ──
+    if (en.state === 'grounded') {
+      en.takeoffTimer -= dt;
+      // Stay at airfield
+      if (en.homeBase) {
+        const groundY = getTerrainY(en.homeBase.x + en.homeBase.width / 2);
+        en.y = groundY - 8;
+        en.x = en.homeBase.x + en.homeBase.width / 2;
+        en.vx = 0; en.vy = 0;
+      }
+      if (en.takeoffTimer <= 0) {
+        en.state = 'flying';
+        en.landed = false;
+        en.fuel = ENEMY_MAX_FUEL;
+        // Launch direction: toward player base
+        const towardPlayer = en.x < baseX ? 0 : Math.PI;
+        en.angle = towardPlayer;
+        en.vx = Math.cos(en.angle) * en.speed;
+        en.vy = -40; // slight upward
+      }
+      // Grounded enemies can still be hit — fall through to collision checks
     }
 
-    // World wrap
-    if (en.x < 0) en.x += WORLD_W;
-    if (en.x >= WORLD_W) en.x -= WORLD_W;
+    // ── Flying or returning ──
+    if (en.state === 'flying' || en.state === 'returning') {
+      const playerSafe = player.invincible > 0 || player.landed;
+      let dist;
 
-    // Engine trail (color per type)
-    const trailColor = ENEMY_SPECS[en.type].color;
-    addParticle(en.x - Math.cos(en.angle) * 18, en.y - Math.sin(en.angle) * 18, -en.vx * 0.05, -en.vy * 0.05, 0.15, trailColor, 1.5);
+      // Consume fuel
+      en.fuel -= dt * 20;
 
-    // Collision with player
-    if (player.invincible <= 0 && state === ST.PLAYING) {
+      // Switch to returning when fuel low
+      if (en.fuel < 150 && en.state === 'flying') {
+        en.state = 'returning';
+      }
+
+      if (en.state === 'returning' && en.homeBase) {
+        // Fly back to home base
+        const homeX = en.homeBase.x + en.homeBase.width / 2;
+        const homeY = getTerrainY(homeX) - 20;
+        const dx = homeX - en.x;
+        const dy = homeY - en.y;
+        dist = Math.sqrt(dx * dx + dy * dy);
+        const desiredAngle = Math.atan2(dy, dx);
+        let angleDiff = desiredAngle - en.angle;
+        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        en.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), 2.0 * dt);
+        en.vx = Math.cos(en.angle) * en.speed * 0.7;
+        en.vy = Math.sin(en.angle) * en.speed * 0.7;
+        en.x += en.vx * dt;
+        en.y += en.vy * dt;
+
+        // Landing check
+        const nearBase = Math.abs(en.x - homeX) < 40;
+        const groundY = getTerrainY(en.x);
+        if (nearBase && en.y >= groundY - 15) {
+          en.state = 'grounded';
+          en.landed = true;
+          en.vx = 0; en.vy = 0;
+          en.y = groundY - 8;
+          en.fuel = ENEMY_MAX_FUEL;
+          en.takeoffTimer = 3 + Math.random() * 4;
+          continue;
+        }
+      } else {
+        // Normal combat behavior
+        if (en.type === 'zeppelin') {
+          dist = updateZeppelinEnemy(en, dt);
+        } else if (en.type === 'bomber') {
+          dist = updateBomberEnemy(en, dt, playerSafe);
+        } else if (en.type === 'jet') {
+          dist = updateChaserEnemy(en, dt, playerSafe, 2.5, 0.85);
+        } else {
+          dist = updateChaserEnemy(en, dt, playerSafe, 1.5, 0.7);
+        }
+      }
+
+      // Clamp at world edges
+      if (en.x < 50) { en.x = 50; en.vx = Math.abs(en.vx); en.angle = 0; }
+      if (en.x >= WORLD_W - 50) { en.x = WORLD_W - 50; en.vx = -Math.abs(en.vx); en.angle = Math.PI; }
+
+      // Engine trail (color per type)
+      const trailColor = ENEMY_SPECS[en.type].color;
+      addParticle(en.x - Math.cos(en.angle) * 18, en.y - Math.sin(en.angle) * 18, -en.vx * 0.05, -en.vy * 0.05, 0.15, trailColor, 1.5);
+
+      // Bird strike check for jet enemies
+      if (en.type === 'jet' && !en.stalled) {
+        for (const bg of birds) {
+          for (const bird of bg.flock) {
+            if (!bird.alive) continue;
+            if (Math.abs(bird.x - en.x) < 15 && Math.abs(bird.y - en.y) < 10) {
+              bird.alive = false;
+              addExplosion(bird.x, bird.y, 6, false);
+              en.stalled = true;
+              en.stallTimer = 3;
+              en.speed = 40;
+            }
+          }
+        }
+      }
+    }
+
+    // Collision with player (both grounded and flying enemies)
+    if (player.invincible <= 0 && state === ST.PLAYING && !en.landed) {
       const spec = ENEMY_SPECS[en.type];
       if (Math.abs(en.x - player.x) < spec.hitW + 5 && Math.abs(en.y - player.y) < spec.hitH + 3) {
         en.alive = false;
         addExplosion(en.x, en.y, 20, true);
         killPlayer();
-      }
-    }
-
-    // Bird strike check for jet enemies
-    if (en.type === 'jet' && !en.stalled) {
-      for (const bg of birds) {
-        for (const bird of bg.flock) {
-          if (!bird.alive) continue;
-          if (Math.abs(bird.x - en.x) < 15 && Math.abs(bird.y - en.y) < 10) {
-            bird.alive = false;
-            addExplosion(bird.x, bird.y, 6, false);
-            en.stalled = true;
-            en.stallTimer = 3;
-            en.speed = 40;
-          }
-        }
       }
     }
   }
@@ -2203,7 +2379,9 @@ function updateBirds(dt) {
       const sinFreq = bg.sinFreq || 0.005;
       b.y += bg.vy * dt + Math.sin(Date.now() * sinFreq + b.x * 0.1) * (sinAmp * 0.1);
 
-      if (b.x < -100) b.x += WORLD_W + 200;
+      // Reverse direction at world edges
+      if (b.x < 50) { b.x = 50; bg.vx = Math.abs(bg.vx); }
+      if (b.x >= WORLD_W - 50) { b.x = WORLD_W - 50; bg.vx = -Math.abs(bg.vx); }
 
       // Collision with player
       if (player.invincible <= 0 && state === ST.PLAYING) {
@@ -2338,9 +2516,9 @@ function updateDragons(dt) {
     const groundY = getTerrainY(d.x);
     if (d.y > groundY - 30) d.y = groundY - 30;
 
-    // World wrap
-    if (d.x < 0) d.x += WORLD_W;
-    if (d.x >= WORLD_W) d.x -= WORLD_W;
+    // Clamp at world edges
+    if (d.x < 100) { d.x = 100; d.vx = Math.abs(d.vx); }
+    if (d.x >= WORLD_W - 100) { d.x = WORLD_W - 100; d.vx = -Math.abs(d.vx); }
 
     // Collision with player (body)
     if (player.invincible <= 0 && state === ST.PLAYING) {
@@ -2443,6 +2621,10 @@ function draw() {
 
   // Home base
   drawBase();
+  drawSearchlights();
+
+  // Enemy airfields
+  drawEnemyBases();
 
   // Buildings
   for (const bld of buildings) {
@@ -2926,6 +3108,95 @@ function drawLandBase() {
   }
 }
 
+// ── Searchlights from home base ──
+function drawSearchlights() {
+  const homeX = baseX + BASE_WIDTH / 2;
+  const homeY = getTerrainY(homeX);
+  const t = Date.now() * 0.001;
+  const p = player;
+
+  if (p.autopilot && state === ST.PLAYING) {
+    // Tractor beam mode: two beams lock onto the player
+    const dx = p.x - homeX;
+    const dy = p.y - homeY;
+    const angle = Math.atan2(dy, dx);
+
+    // Draw two converging beams from base to player
+    for (let beam = -1; beam <= 1; beam += 2) {
+      const beamOriginX = homeX + beam * 30;
+      const beamOriginY = homeY - 5;
+      const dist = Math.sqrt((p.x - beamOriginX) ** 2 + (p.y - beamOriginY) ** 2);
+
+      ctx.save();
+      // Beam cone with gradient
+      const grad = ctx.createLinearGradient(beamOriginX, beamOriginY, p.x, p.y);
+      grad.addColorStop(0, 'rgba(0, 255, 255, 0.25)');
+      grad.addColorStop(0.6, 'rgba(0, 200, 255, 0.08)');
+      grad.addColorStop(1, 'rgba(0, 255, 255, 0.02)');
+
+      const coneAngle = Math.atan2(p.y - beamOriginY, p.x - beamOriginX);
+      const spread = 0.06; // narrow beam
+
+      ctx.beginPath();
+      ctx.moveTo(beamOriginX, beamOriginY);
+      ctx.lineTo(p.x + Math.cos(coneAngle + spread) * 20, p.y + Math.sin(coneAngle + spread) * 20);
+      ctx.lineTo(p.x + Math.cos(coneAngle - spread) * 20, p.y + Math.sin(coneAngle - spread) * 20);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // Bright center line
+      ctx.strokeStyle = 'rgba(0, 255, 255, 0.15)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(beamOriginX, beamOriginY);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Glow circle around player when captured
+    const captureRadius = Math.sqrt((p.x - homeX) ** 2 + (p.y - homeY) ** 2);
+    if (captureRadius < 300) {
+      const glowAlpha = 0.15 * (1 - captureRadius / 300);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 20 + Math.sin(t * 5) * 3, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(0, 255, 255, ${glowAlpha + 0.1})`;
+      ctx.lineWidth = 2;
+      neonGlow(ctx, '#0ff', 8);
+      ctx.stroke();
+      clearGlow(ctx);
+    }
+  } else if (state === ST.PLAYING && !p.landed) {
+    // Idle sweep mode: two searchlights slowly sweep the sky
+    for (let beam = -1; beam <= 1; beam += 2) {
+      const beamOriginX = homeX + beam * 25;
+      const beamOriginY = homeY - 5;
+      // Sweep angle: oscillates back and forth
+      const sweepAngle = -Math.PI / 2 + Math.sin(t * 0.4 + beam * 1.5) * 0.8;
+      const beamLen = 400;
+      const endX = beamOriginX + Math.cos(sweepAngle) * beamLen;
+      const endY = beamOriginY + Math.sin(sweepAngle) * beamLen;
+      const spread = 0.08;
+
+      ctx.save();
+      const grad = ctx.createLinearGradient(beamOriginX, beamOriginY, endX, endY);
+      grad.addColorStop(0, 'rgba(0, 200, 255, 0.12)');
+      grad.addColorStop(0.5, 'rgba(0, 200, 255, 0.04)');
+      grad.addColorStop(1, 'rgba(0, 200, 255, 0)');
+
+      ctx.beginPath();
+      ctx.moveTo(beamOriginX, beamOriginY);
+      ctx.lineTo(endX + Math.cos(sweepAngle + spread) * 40, endY + Math.sin(sweepAngle + spread) * 40);
+      ctx.lineTo(endX + Math.cos(sweepAngle - spread) * 40, endY + Math.sin(sweepAngle - spread) * 40);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
 function drawGroundCrew(groundY) {
   const crewColor = '#0af';
   const px = player.x;
@@ -3159,9 +3430,9 @@ function updateSubmarines(dt) {
     if (sub.x < 200) sub.vx = Math.abs(sub.vx);
     if (sub.x > WORLD_W - 200) sub.vx = -Math.abs(sub.vx);
 
-    // World wrap
-    if (sub.x < 0) sub.x += WORLD_W;
-    if (sub.x >= WORLD_W) sub.x -= WORLD_W;
+    // Clamp at edges
+    if (sub.x < 200) { sub.x = 200; sub.vx = Math.abs(sub.vx); }
+    if (sub.x >= WORLD_W - 200) { sub.x = WORLD_W - 200; sub.vx = -Math.abs(sub.vx); }
 
     // Keep at water surface
     sub.y = waterLineY - 2;
