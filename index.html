@@ -108,7 +108,7 @@ window.addEventListener('resize', resize);
 const WORLD_W = 12000;
 const BULLET_SPEED = 600;
 const BOMB_VXFRAC = 0.8;
-const MAX_FUEL = 1000;
+const MAX_FUEL = 2500;
 const MAX_AMMO = 200;
 const MAX_BOMBS = 5;
 const FLAK_INTERVAL = 90;
@@ -544,7 +544,8 @@ function initPlayer() {
     landed: true,
     autopilot: false,
     hp: PLAYER_MAX_HP,
-    burning: false,        // on fire, diving to crash
+    burning: false,        // on fire or engine out, diving to crash
+    engineOut: false,      // true = fuel empty (no fire), false = damage fire
     burnTimer: 0,          // time until explosion
     hitFlash: 0,           // visual flash on damage
     // Input edge detection
@@ -1588,10 +1589,9 @@ function updatePlayer(dt) {
     const dist = Math.sqrt(dx * dx + dy * dy);
     const CAPTURE_RADIUS = 400; // matches searchlight range
 
-    // Too far — autopilot does nothing, player must fly closer
+    // Too far — cancel autopilot so player retains control
     if (dist > CAPTURE_RADIUS) {
-      // Just keep autopilot flag on but don't control the plane
-      // Player flies normally until within range
+      p.autopilot = false;
     }
     // Within capture range: tractor beam pulls plane in
     else {
@@ -1648,14 +1648,23 @@ function updatePlayer(dt) {
       else if (diff > 8) p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
     }
     p.accel = 0;
-    // Fire/smoke particles trailing from engine
-    const rad = getPlaneRadians(p);
-    addParticle(p.x - Math.cos(rad) * 15, p.y - Math.sin(rad) * 15,
-      (Math.random() - 0.5) * 30, -20 - Math.random() * 20, 0.4,
-      Math.random() < 0.5 ? '#f80' : '#f44', 2 + Math.random());
-    if (Math.random() < 0.3) {
-      addParticle(p.x + (Math.random() - 0.5) * 10, p.y + (Math.random() - 0.5) * 10,
-        (Math.random() - 0.5) * 15, -10 - Math.random() * 15, 0.6, '#333', 3);
+    if (p.engineOut) {
+      // Engine out: light smoke only, no fire
+      if (Math.random() < 0.15) {
+        const rad = getPlaneRadians(p);
+        addParticle(p.x - Math.cos(rad) * 15, p.y - Math.sin(rad) * 15,
+          (Math.random() - 0.5) * 10, -10 - Math.random() * 10, 0.5, '#555', 2);
+      }
+    } else {
+      // Fire/smoke particles trailing from engine
+      const rad = getPlaneRadians(p);
+      addParticle(p.x - Math.cos(rad) * 15, p.y - Math.sin(rad) * 15,
+        (Math.random() - 0.5) * 30, -20 - Math.random() * 20, 0.4,
+        Math.random() < 0.5 ? '#f80' : '#f44', 2 + Math.random());
+      if (Math.random() < 0.3) {
+        addParticle(p.x + (Math.random() - 0.5) * 10, p.y + (Math.random() - 0.5) * 10,
+          (Math.random() - 0.5) * 15, -10 - Math.random() * 15, 0.6, '#333', 3);
+      }
     }
     // Timer expired: final explosion
     if (p.burnTimer <= 0) {
@@ -1664,6 +1673,19 @@ function updatePlayer(dt) {
     }
     // Don't process manual controls — plane is doomed
     // Fall through to physics below
+  }
+
+  // ── Autopilot toggle (H) — always available, not gated by autopilot state ──
+  if (!p.burning) {
+    if (keys['KeyH']) {
+      if (!p._autoHeld) { p.autopilot = !p.autopilot; p._autoHeld = true; }
+    } else { p._autoHeld = false; }
+
+    // Cancel autopilot on any manual input (pitch, throttle, fire, bomb)
+    if (p.autopilot && (keys['Comma'] || keys['Slash'] || keys['ArrowUp'] || keys['ArrowDown']
+        || keys['KeyX'] || keys['Backslash'] || keys['Backquote'] || keys['Space'] || keys['KeyB'])) {
+      p.autopilot = false;
+    }
   }
 
   // ── Manual controls ──
@@ -1714,17 +1736,6 @@ function updatePlayer(dt) {
       p._turnTimer = 0;
     }
 
-    // Autopilot (H) — toggle; any other manual input cancels it
-    if (keys['KeyH']) {
-      if (!p._autoHeld) { p.autopilot = !p.autopilot; p._autoHeld = true; }
-    } else { p._autoHeld = false; }
-
-    // Cancel autopilot on any manual input (pitch, throttle, fire, bomb)
-    if (p.autopilot && (keys['Comma'] || keys['Slash'] || keys['ArrowUp'] || keys['ArrowDown']
-        || keys['KeyX'] || keys['Backslash'] || keys['Backquote'] || keys['Space'] || keys['KeyB'])) {
-      p.autopilot = false;
-    }
-
     // Fire
     if (keys['Space'] && p.fireCooldown <= 0 && p.ammo > 0) {
       const rad = getPlaneRadians(p);
@@ -1763,12 +1774,13 @@ function updatePlayer(dt) {
       if (p.speed < targetSpeed) p.speed++;
       else if (p.speed > targetSpeed) p.speed--;
       if (p.speed > PLANE_MAX_SPEED) p.speed = PLANE_MAX_SPEED;
-      // With throttle applied, never drop below minimum flight speed
-      if (p.accel > 0 && p.speed < PLANE_MIN_SPEED) p.speed = PLANE_MIN_SPEED;
     }
 
-    // Stall: speed too low (only in normal flight, not when burning)
-    if (p.speed <= STALL_SPEED && !p.stalled && !p.burning) {
+    // With throttle applied, never drop below minimum flight speed (checked every frame)
+    if (p.accel > 0 && p.speed < PLANE_MIN_SPEED) p.speed = PLANE_MIN_SPEED;
+
+    // Stall: speed too low (only in normal flight, not when burning, not with throttle)
+    if (p.speed <= STALL_SPEED && !p.stalled && !p.burning && p.accel === 0) {
       p.stalled = true;
     }
 
@@ -1795,8 +1807,8 @@ function updatePlayer(dt) {
     p.vx = COS_TABLE[effAngle] * p.speed * PIXELS_PER_UNIT;
     p.vy = -SIN_TABLE[effAngle] * p.speed * PIXELS_PER_UNIT;
 
-    // Stall gravity
-    if (p.stalled || p.speed < PLANE_MIN_SPEED) {
+    // Stall gravity (only when actually stalling, not just slow with throttle)
+    if (p.stalled || (p.speed < PLANE_MIN_SPEED && p.accel === 0)) {
       p.vy += 150 * dt;
     }
 
@@ -1805,8 +1817,17 @@ function updatePlayer(dt) {
     p.y += p.vy * dt;
 
     // Fuel
-    p.fuel -= dt * (15 + p.accel * 8);
-    if (p.fuel <= 0) { p.fuel = 0; p.accel = 0; }
+    p.fuel -= dt * (8 + p.accel * 5);
+    if (p.fuel <= 0) {
+      p.fuel = 0;
+      p.accel = 0;
+      // Out of fuel — engine dead, plane glides down and crashes
+      if (!p.burning && !p.stalled) {
+        p.burning = true;
+        p.engineOut = true;
+        p.burnTimer = 5; // longer glide before crash
+      }
+    }
 
     // Engine trail
     if (p.accel > 0) {
@@ -1907,6 +1928,7 @@ function killPlayer() {
     }
   }
   player.burning = false;
+  player.engineOut = false;
   lives--;
   state = ST.DYING;
   deathTimer = 2.5;
@@ -2330,6 +2352,10 @@ function updateEnemies(dt) {
         en.vy = Math.sin(en.angle) * en.speed * 0.7;
         en.x += en.vx * dt;
         en.y += en.vy * dt;
+
+        // Terrain clamping — don't fly underground
+        const retGroundY = getTerrainY(en.x);
+        if (en.y > retGroundY - 40) en.y = retGroundY - 40;
 
         // Landing check
         const nearBase = Math.abs(en.x - homeX) < 40;
@@ -2906,7 +2932,8 @@ function draw() {
       const pDrawAngle = pFacingLeft ? (pRad > 0 ? pRad - Math.PI : pRad + Math.PI) : pRad;
       // Color changes with damage: cyan → yellow → red → burning
       let pColor = '#0ff';
-      if (player.burning) pColor = '#f44';
+      if (player.burning && player.engineOut) pColor = '#888';
+      else if (player.burning) pColor = '#f44';
       else if (player.hp === 2) pColor = '#ff0';
       else if (player.hp <= 1) pColor = '#f80';
       // Hit flash override
@@ -3272,8 +3299,9 @@ function drawSearchlights() {
   const t = Date.now() * 0.001;
   const p = player;
 
-  if (p.autopilot && state === ST.PLAYING) {
-    // Tractor beam mode: two beams lock onto the player
+  const playerDist = Math.sqrt((p.x - homeX) ** 2 + (p.y - homeY) ** 2);
+  if (p.autopilot && state === ST.PLAYING && playerDist <= 400) {
+    // Tractor beam mode: two beams lock onto the player (only within capture range)
     const dx = p.x - homeX;
     const dy = p.y - homeY;
     const angle = Math.atan2(dy, dx);
