@@ -72,6 +72,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0f;font-family:
     </div>
   </div>
   <div id="hud">
+    <div class="hud-item"><span class="hud-label">HP</span><span id="h-hp" class="hud-val green">■■■</span></div>
     <div class="hud-item"><span class="hud-label">Lives</span><span id="h-lives" class="hud-val">●●●●●</span></div>
     <div class="hud-item"><span class="hud-label">Fuel</span><span id="fuel-bar-wrap" class="fuel-bar"><span id="h-fuel" class="fuel-fill" style="width:100%"></span></span><span id="h-fuel-pct" class="fuel-pct">100%</span></div>
     <div class="hud-item"><span class="hud-label">Bombs</span><span id="h-bombs" class="hud-val">5</span></div>
@@ -164,6 +165,7 @@ const PLANE_MAX_SPEED = 9;    // Maximum speed
 const PLANE_MAX_ACCEL = 5;    // Maximum throttle acceleration
 const PIXELS_PER_UNIT = 28;   // Scale factor: Sopwith speed units → pixel velocity
 const STALL_SPEED = 2;        // Below this speed, plane stalls
+const PLAYER_MAX_HP = 3;      // Hits before plane goes down
 const TURN_RATE = 1;          // Angle steps per input (1 = one notch per press)
 const PROJ_GRAVITY = 300;     // Gravity for projectiles (pixels/s²)
 
@@ -542,6 +544,10 @@ function initPlayer() {
     invincible: 0,
     landed: true,
     autopilot: false,
+    hp: PLAYER_MAX_HP,
+    burning: false,        // on fire, diving to crash
+    burnTimer: 0,          // time until explosion
+    hitFlash: 0,           // visual flash on damage
     // Input edge detection
     _turnHeld: false,
     _turnTimer: 0,
@@ -834,6 +840,7 @@ function initLevel() {
   fleeingPeople = [];
   dragons = [];
   submarines = [];
+  parachutes = [];
   enemyAccuracyDebuff = 0;
   spawnBuildings();
   spawnEnemies();
@@ -1521,11 +1528,13 @@ function update(dt) {
     updateFleeingPeople(dt);
     updateDragons(dt);
     updateSubmarines(dt);
+    updateParachutes(dt);
     updateParticles(dt);
     updateCamera();
     checkLevelComplete();
     updateHUD();
   } else if (state === ST.DYING) {
+    updateParachutes(dt);
     updateParticles(dt);
     deathTimer -= dt;
     if (deathTimer <= 0) {
@@ -1579,28 +1588,27 @@ function updatePlayer(dt) {
     const dx = homeX - p.x;
     const dy = homeY - p.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
+    const CAPTURE_RADIUS = 500;
 
-    // Phase 1: Cruise toward base — steer gently, keep speed
-    if (dist > 300) {
+    // Phase 1: Cruise toward base — steer toward home, keep speed
+    if (dist > CAPTURE_RADIUS) {
       p.orient = false;
+      p.stalled = false;
+      // Target heading: aim directly at home
       const targetHeading = dx > 0 ? 0 : 8;
       p.accel = PLANE_MAX_ACCEL;
-      // Gently steer toward target heading (1 step per 4 frames)
-      if (p.angleIdx !== targetHeading && p.moveCount % 4 === 0) {
+      // Steer every 2 frames (more responsive)
+      if (p.angleIdx !== targetHeading && p.moveCount % 2 === 0) {
         const diff = ((targetHeading - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
         if (diff <= 8) p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
         else p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
       }
       // Altitude correction: climb if too low, descend if too high
       const desiredAlt = homeY - 80;
-      if (p.y > desiredAlt + 30 && p.moveCount % 6 === 0) {
-        // Too low, nudge up
-        const up = p.orient ? -1 : 1;
-        p.angleIdx = ((p.angleIdx + up) + NUM_ANGLES) % NUM_ANGLES;
-      } else if (p.y < desiredAlt - 60 && p.moveCount % 6 === 0) {
-        // Too high, nudge down
-        const down = p.orient ? 1 : -1;
-        p.angleIdx = ((p.angleIdx + down) + NUM_ANGLES) % NUM_ANGLES;
+      if (p.y > desiredAlt + 30 && p.moveCount % 4 === 0) {
+        p.angleIdx = ((p.angleIdx + 1) + NUM_ANGLES) % NUM_ANGLES;
+      } else if (p.y < desiredAlt - 60 && p.moveCount % 4 === 0) {
+        p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
       }
     }
     // Phase 2: Tractor beam capture — smooth interpolation to landing
@@ -1648,8 +1656,37 @@ function updatePlayer(dt) {
     }
   }
 
+  // ── Burning plane — uncontrollable dive to crash ──
+  if (p.burning) {
+    p.burnTimer -= dt;
+    p.hitFlash -= dt;
+    // Nose drops slowly toward ground
+    if (p.moveCount % 8 === 0) {
+      const diff = ((12 - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
+      if (diff > 0 && diff <= 8) p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+      else if (diff > 8) p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
+    }
+    p.accel = 0;
+    // Fire/smoke particles trailing from engine
+    const rad = getPlaneRadians(p);
+    addParticle(p.x - Math.cos(rad) * 15, p.y - Math.sin(rad) * 15,
+      (Math.random() - 0.5) * 30, -20 - Math.random() * 20, 0.4,
+      Math.random() < 0.5 ? '#f80' : '#f44', 2 + Math.random());
+    if (Math.random() < 0.3) {
+      addParticle(p.x + (Math.random() - 0.5) * 10, p.y + (Math.random() - 0.5) * 10,
+        (Math.random() - 0.5) * 15, -10 - Math.random() * 15, 0.6, '#333', 3);
+    }
+    // Timer expired: final explosion
+    if (p.burnTimer <= 0) {
+      killPlayer();
+      return;
+    }
+    // Don't process manual controls — plane is doomed
+    // Fall through to physics below
+  }
+
   // ── Manual controls ──
-  if (!p.autopilot) {
+  if (!p.autopilot && !p.burning) {
     // Accelerate (X or ArrowUp)
     if (keys['KeyX'] || keys['ArrowUp']) {
       if (p.accel < PLANE_MAX_ACCEL) p.accel++;
@@ -1696,11 +1733,11 @@ function updatePlayer(dt) {
       p._turnTimer = 0;
     }
 
-    // Flip (Period or F) — reverses direction: mirrors angleIdx horizontally AND toggles orient
+    // Flip (Period or F) — reverses horizontal direction, toggles orient
     if (keys['Period'] || keys['KeyF']) {
       if (!p._flipHeld && !p.landed) {
-        // Mirror angleIdx: 0↔8, 1↔7, 2↔6, 3↔5, etc. (horizontal flip)
-        p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
+        // Mirror over vertical axis: 0↔8, 1↔7, 2↔6, etc.
+        p.angleIdx = (8 - p.angleIdx + NUM_ANGLES) % NUM_ANGLES;
         p.orient = !p.orient;
         p.autopilot = false;
         p._flipHeld = true;
@@ -1745,6 +1782,7 @@ function updatePlayer(dt) {
   p.fireCooldown -= dt;
   p.bombCooldown -= dt;
   if (p.invincible > 0) p.invincible -= dt;
+  if (p.hitFlash > 0) p.hitFlash -= dt;
 
   // ── Sopwith-style physics ──
   if (!p.landed) {
@@ -1757,24 +1795,27 @@ function updatePlayer(dt) {
       if (p.speed < targetSpeed) p.speed++;
       else if (p.speed > targetSpeed) p.speed--;
       if (p.speed > PLANE_MAX_SPEED) p.speed = PLANE_MAX_SPEED;
+      if (p.speed < 1 && p.accel > 0) p.speed = 1; // throttle prevents total speed loss
     }
 
-    // Stall: speed too low
-    if (p.speed <= STALL_SPEED && !p.stalled) {
+    // Stall: speed too low (only in normal flight, not when burning)
+    if (p.speed <= STALL_SPEED && !p.stalled && !p.burning) {
       p.stalled = true;
     }
 
     if (p.stalled) {
       // Nose drops toward "down" (angleIdx 12 = straight down)
-      if (p.moveCount % 6 === 0) {
+      if (p.moveCount % 8 === 0) {
         if (p.angleIdx !== 12) {
           const diff = ((12 - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
           if (diff <= 8) p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
           else p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
         }
       }
-      // Recover when speed adequate and near level flight
-      if (p.speed >= PLANE_MIN_SPEED && (effAngle <= 2 || effAngle >= 14)) {
+      // Speed naturally increases during dive — minimum floor of 1
+      if (p.speed < 1) p.speed = 1;
+      // Recover when speed adequate (relaxed angle requirement)
+      if (p.speed >= PLANE_MIN_SPEED) {
         p.stalled = false;
       }
     }
@@ -1831,12 +1872,13 @@ function updatePlayer(dt) {
       const levelEnough = (p.angleIdx <= 1 || p.angleIdx >= 15 || (p.angleIdx >= 7 && p.angleIdx <= 9));
       const slowEnough = p.speed <= PLANE_MIN_SPEED + 2;
 
-      if (nearBase && levelEnough && slowEnough && !p.stalled && !p.orient) {
+      if (nearBase && levelEnough && slowEnough && !p.stalled && !p.orient && !p.burning) {
         p.y = groundY - 8;
         p.vy = 0; p.vx = 0; p.speed = 0; p.accel = 0; p.angleIdx = 0;
         p.orient = false;
         p.landed = true; p.stalled = false;
         p.fuel = MAX_FUEL; p.ammo = MAX_AMMO; p.bombCount = MAX_BOMBS;
+        p.hp = PLAYER_MAX_HP; // Repair on landing
       } else {
         killPlayer();
         return;
@@ -1856,6 +1898,33 @@ function updatePlayer(dt) {
   }
 }
 
+// ── Parachute tracking ──
+let parachutes = [];
+
+function damagePlayer(amount) {
+  if (player.invincible > 0 || player.burning || state !== ST.PLAYING) return;
+  amount = amount || 1;
+  player.hp -= amount;
+  player.hitFlash = 0.3;
+  player.invincible = 0.5; // brief i-frames after hit
+  addExplosion(player.x, player.y, 8, false);
+  if (player.hp <= 0) {
+    // Plane is destroyed — start burning dive
+    player.burning = true;
+    player.burnTimer = 2.5; // seconds until final explosion
+    player.autopilot = false;
+    // Eject pilot parachute
+    parachutes.push({
+      x: player.x, y: player.y - 10,
+      vx: (Math.random() - 0.5) * 30,
+      vy: -40,
+      deployed: false,
+      deployTimer: 0.3,
+      landed: false
+    });
+  }
+}
+
 function killPlayer() {
   addExplosion(player.x, player.y, 40, true);
   playBoom(true);
@@ -1868,9 +1937,40 @@ function killPlayer() {
       }
     }
   }
+  player.burning = false;
   lives--;
   state = ST.DYING;
-  deathTimer = 2;
+  deathTimer = 2.5;
+}
+
+function updateParachutes(dt) {
+  for (let i = parachutes.length - 1; i >= 0; i--) {
+    const p = parachutes[i];
+    if (p.landed) {
+      p.landTimer -= dt;
+      if (p.landTimer <= 0) { parachutes.splice(i, 1); }
+      continue;
+    }
+    p.deployTimer -= dt;
+    if (p.deployTimer <= 0) p.deployed = true;
+    if (p.deployed) {
+      // Gentle drift down
+      p.vy = 40; // slow descent
+      p.vx *= 0.98; // slow horizontal drift
+    } else {
+      // Free-fall before chute opens
+      p.vy += 200 * dt;
+    }
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    // Ground landing
+    const groundY = getTerrainY(p.x);
+    if (p.y >= groundY - 5) {
+      p.y = groundY - 5;
+      p.landed = true;
+      p.landTimer = 2; // stay visible on ground briefly
+    }
+  }
 }
 
 function updateBullets(dt) {
@@ -1990,9 +2090,9 @@ function updateBullets(dt) {
     }
 
     // Enemy bullets hit player
-    if (!b.friendly && player.invincible <= 0) {
+    if (!b.friendly && player.invincible <= 0 && !player.burning) {
       if (Math.abs(b.x - player.x) < 18 && Math.abs(b.y - player.y) < 10) {
-        killPlayer();
+        damagePlayer(1);
         bullets.splice(i, 1);
         break;
       }
@@ -2058,9 +2158,9 @@ function updateBombs(dt) {
     }
 
     // Enemy bombs hit player
-    if (b.friendly === false && player.invincible <= 0 && state === ST.PLAYING) {
+    if (b.friendly === false && player.invincible <= 0 && !player.burning && state === ST.PLAYING) {
       if (Math.abs(b.x - player.x) < 20 && Math.abs(b.y - player.y) < 15) {
-        killPlayer();
+        damagePlayer(2);
         bombs.splice(i, 1);
         continue;
       }
@@ -2122,14 +2222,16 @@ function updateChaserEnemy(en, dt, playerSafe, turnRate, bulletSpeedMult) {
   if (en.y > groundY - 40) en.y = groundY - 40;
   if (en.y < 30) en.y = 30;
 
-  // Fire at player
+  // Fire at player — with accuracy spread
   const fireIntervalMult = enemyAccuracyDebuff > 0 ? 2 : 1;
   en.fireTimer--;
   if (en.fireTimer <= 0 && dist < 600 && !playerSafe) {
-    const bvx = Math.cos(en.angle) * BULLET_SPEED * bulletSpeedMult;
-    const bvy = Math.sin(en.angle) * BULLET_SPEED * bulletSpeedMult;
+    const spread = (Math.random() - 0.5) * 0.25; // ±~7 degrees
+    const fireAngle = en.angle + spread;
+    const bvx = Math.cos(fireAngle) * BULLET_SPEED * bulletSpeedMult;
+    const bvy = Math.sin(fireAngle) * BULLET_SPEED * bulletSpeedMult;
     bullets.push({ x: en.x + Math.cos(en.angle) * 20, y: en.y + Math.sin(en.angle) * 20, vx: bvx, vy: bvy, life: 1.0, friendly: false });
-    en.fireTimer = (ENEMY_SPECS[en.type].fireInterval + Math.random() * 30 | 0) * fireIntervalMult;
+    en.fireTimer = (ENEMY_SPECS[en.type].fireInterval + Math.random() * 50 | 0) * fireIntervalMult;
   }
 
   return dist;
@@ -2279,9 +2381,9 @@ function updateEnemies(dt) {
         } else if (en.type === 'bomber') {
           dist = updateBomberEnemy(en, dt, playerSafe);
         } else if (en.type === 'jet') {
-          dist = updateChaserEnemy(en, dt, playerSafe, 2.5, 0.85);
+          dist = updateChaserEnemy(en, dt, playerSafe, 1.6, 0.85);
         } else {
-          dist = updateChaserEnemy(en, dt, playerSafe, 1.5, 0.7);
+          dist = updateChaserEnemy(en, dt, playerSafe, 1.0, 0.7);
         }
       }
 
@@ -2311,12 +2413,12 @@ function updateEnemies(dt) {
     }
 
     // Collision with player (both grounded and flying enemies)
-    if (player.invincible <= 0 && state === ST.PLAYING && !en.landed) {
+    if (player.invincible <= 0 && !player.burning && state === ST.PLAYING && !en.landed) {
       const spec = ENEMY_SPECS[en.type];
       if (Math.abs(en.x - player.x) < spec.hitW + 5 && Math.abs(en.y - player.y) < spec.hitH + 3) {
         en.alive = false;
         addExplosion(en.x, en.y, 20, true);
-        killPlayer();
+        damagePlayer(3); // Collision is devastating
       }
     }
   }
@@ -2332,14 +2434,16 @@ function updateFlak(dt) {
       const dy = player.y - (bld.y);
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < 500) {
-        const a = Math.atan2(dy, dx);
+        // Large spread — flak is inaccurate area suppression
+        const spread = (Math.random() - 0.5) * 0.5; // ±~14 degrees
+        const a = Math.atan2(dy, dx) + spread;
         flakShots.push({
           x: bld.x + bld.w / 2, y: bld.y,
           vx: Math.cos(a) * FLAK_SPEED, vy: Math.sin(a) * FLAK_SPEED,
           life: 1.5
         });
       }
-      bld.flakTimer = FLAK_INTERVAL + Math.random() * 20 | 0;
+      bld.flakTimer = FLAK_INTERVAL + Math.random() * 40 | 0; // More random timing
     }
   }
 
@@ -2361,9 +2465,9 @@ function updateFlak(dt) {
     }
 
     // Hit player
-    if (player.invincible <= 0 && state === ST.PLAYING) {
+    if (player.invincible <= 0 && !player.burning && state === ST.PLAYING) {
       if (Math.abs(f.x - player.x) < 20 && Math.abs(f.y - player.y) < 15) {
-        killPlayer();
+        damagePlayer(1);
         flakShots.splice(i, 1);
       }
     }
@@ -2384,7 +2488,7 @@ function updateBirds(dt) {
       if (b.x >= WORLD_W - 50) { b.x = WORLD_W - 50; bg.vx = -Math.abs(bg.vx); }
 
       // Collision with player
-      if (player.invincible <= 0 && state === ST.PLAYING) {
+      if (player.invincible <= 0 && !player.burning && state === ST.PLAYING) {
         const hitRange = bg.type === 'eagle' ? 18 : bg.type === 'goose' ? 16 : 12;
         if (Math.abs(b.x - player.x) < hitRange && Math.abs(b.y - player.y) < 10) {
           b.alive = false;
@@ -2394,9 +2498,9 @@ function updateBirds(dt) {
               addParticle(b.x, b.y, (Math.random()-0.5)*40, (Math.random()-0.5)*40, 0.3, Math.random()<0.5?'#ddd':'#aaa', 1.5);
             }
           } else {
-            // Geese and eagles: lethal on contact
+            // Geese and eagles: damage, not instant kill
             addExplosion(b.x, b.y, 8, false);
-            killPlayer();
+            damagePlayer(1);
           }
         }
       }
@@ -2415,11 +2519,11 @@ function updateOxen(dt) {
     if (Math.random() < 0.005) o.dir *= -1;
 
     // Collision with player
-    if (player.invincible <= 0 && state === ST.PLAYING) {
+    if (player.invincible <= 0 && !player.burning && state === ST.PLAYING) {
       if (player.x > o.x - 5 && player.x < o.x + o.w + 5 && player.y > o.y - 10 && player.y < o.y + o.h + 5) {
         o.alive = false;
         addExplosion(o.x + o.w / 2, o.y, 10, false);
-        killPlayer();
+        damagePlayer(2);
       }
     }
   }
@@ -2496,9 +2600,9 @@ function updateDragons(dt) {
         const fy = d.y;
         addParticle(fx, fy, dir * (80 + Math.random() * 60), (Math.random() - 0.5) * 40, 0.5, Math.random() < 0.5 ? '#f80' : '#ff0', 3);
         // Check fire particle collision with player
-        if (player.invincible <= 0 && state === ST.PLAYING) {
+        if (player.invincible <= 0 && !player.burning && state === ST.PLAYING) {
           if (Math.abs(fx - player.x) < 25 && Math.abs(fy - player.y) < 20) {
-            killPlayer();
+            damagePlayer(1);
           }
         }
       }
@@ -2521,9 +2625,9 @@ function updateDragons(dt) {
     if (d.x >= WORLD_W - 100) { d.x = WORLD_W - 100; d.vx = -Math.abs(d.vx); }
 
     // Collision with player (body)
-    if (player.invincible <= 0 && state === ST.PLAYING) {
+    if (player.invincible <= 0 && !player.burning && state === ST.PLAYING) {
       if (Math.abs(d.x - player.x) < 25 && Math.abs(d.y - player.y) < 15) {
-        killPlayer();
+        damagePlayer(2);
       }
     }
   }
@@ -2546,6 +2650,14 @@ function getBarColor(pct) {
 }
 function updateHUD() {
   const p = player;
+
+  // HP display
+  const hpEl = document.getElementById('h-hp');
+  let hpStr = '';
+  for (let i = 0; i < PLAYER_MAX_HP; i++) hpStr += i < p.hp ? '\u25A0' : '\u25A1';
+  hpEl.textContent = hpStr;
+  hpEl.className = 'hud-val ' + (p.hp <= 1 ? 'red' : 'green');
+
   let livesStr = '';
   for (let i = 0; i < 5; i++) livesStr += i < lives ? '●' : '○';
   document.getElementById('h-lives').textContent = livesStr;
@@ -2780,21 +2892,28 @@ function draw() {
   }
 
   // Enemies (dispatch by type)
-  // Enemy angle is a radian that already points in travel direction — no facingLeft needed
+  // Enemies — compute facingLeft from angle to prevent upside-down rendering
   for (const en of enemies) {
     if (!en.alive) continue;
     const screenX = en.x - camX;
     const margin = en.type === 'zeppelin' ? 150 : 100;
     if (screenX < -margin || screenX > W + margin) continue;
     const spec = ENEMY_SPECS[en.type];
+    // Normalize angle to [-PI, PI]
+    let a = en.angle;
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    // If flying left (angle > 90° or < -90°), flip horizontally and mirror the rotation
+    const flyingLeft = Math.abs(a) > Math.PI / 2;
+    const drawAngle = flyingLeft ? (a > 0 ? a - Math.PI : a + Math.PI) : a;
     if (en.type === 'jet') {
-      drawJet(ctx, en.x, en.y, en.angle, false, spec.color);
+      drawJet(ctx, en.x, en.y, drawAngle, flyingLeft, spec.color);
     } else if (en.type === 'bomber') {
-      drawBomber(ctx, en.x, en.y, en.angle, false, spec.color);
+      drawBomber(ctx, en.x, en.y, drawAngle, flyingLeft, spec.color);
     } else if (en.type === 'zeppelin') {
-      drawZeppelin(ctx, en.x, en.y, en.angle, false, spec.color);
+      drawZeppelin(ctx, en.x, en.y, drawAngle, flyingLeft, spec.color);
     } else {
-      drawBiplane(ctx, en.x, en.y, en.angle, false, spec.color, undefined, false);
+      drawBiplane(ctx, en.x, en.y, drawAngle, flyingLeft, spec.color, undefined, false);
     }
   }
 
@@ -2803,8 +2922,63 @@ function draw() {
     if (player.invincible <= 0 || Math.sin(Date.now() * 0.02) > 0) {
       const pAngle = getEffectiveAngle(player);
       const pFacingLeft = pAngle >= 5 && pAngle <= 11;
-      drawBiplane(ctx, player.x, player.y, getPlaneRadians(player), pFacingLeft, '#0ff', undefined, player.orient);
+      // Color changes with damage: cyan → yellow → red → burning
+      let pColor = '#0ff';
+      if (player.burning) pColor = '#f44';
+      else if (player.hp === 2) pColor = '#ff0';
+      else if (player.hp <= 1) pColor = '#f80';
+      // Hit flash override
+      if (player.hitFlash > 0) pColor = '#fff';
+      drawBiplane(ctx, player.x, player.y, getPlaneRadians(player), pFacingLeft, pColor, undefined, player.orient);
     }
+  }
+
+  // Parachutes
+  for (const chute of parachutes) {
+    const screenX = chute.x - camX;
+    if (screenX < -50 || screenX > W + 50) continue;
+    if (chute.deployed && !chute.landed) {
+      // Draw parachute canopy
+      neonGlow(ctx, '#fff', 6);
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(chute.x, chute.y - 12, 8, Math.PI, 0);
+      ctx.stroke();
+      // Suspension lines
+      ctx.beginPath();
+      ctx.moveTo(chute.x - 7, chute.y - 10);
+      ctx.lineTo(chute.x, chute.y);
+      ctx.moveTo(chute.x + 7, chute.y - 10);
+      ctx.lineTo(chute.x, chute.y);
+      ctx.stroke();
+      clearGlow(ctx);
+    }
+    // Pilot figure (tiny stick person)
+    neonGlow(ctx, '#0ff', 4);
+    ctx.strokeStyle = '#0ff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(chute.x, chute.y - 3, 2, 0, Math.PI * 2); // head
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(chute.x, chute.y - 1);
+    ctx.lineTo(chute.x, chute.y + 4); // body
+    ctx.moveTo(chute.x - 3, chute.y + 1);
+    ctx.lineTo(chute.x + 3, chute.y + 1); // arms
+    if (chute.landed) {
+      ctx.moveTo(chute.x, chute.y + 4);
+      ctx.lineTo(chute.x - 2, chute.y + 7); // legs standing
+      ctx.moveTo(chute.x, chute.y + 4);
+      ctx.lineTo(chute.x + 2, chute.y + 7);
+    } else {
+      ctx.moveTo(chute.x, chute.y + 4);
+      ctx.lineTo(chute.x - 3, chute.y + 7); // legs dangling
+      ctx.moveTo(chute.x, chute.y + 4);
+      ctx.lineTo(chute.x + 3, chute.y + 7);
+    }
+    ctx.stroke();
+    clearGlow(ctx);
   }
 
   // Particles
@@ -2863,6 +3037,7 @@ function draw() {
   // Circular radar scope (HUD overlay)
   if (state === ST.PLAYING || state === ST.LEVEL_COMPLETE) {
     drawRadarScope(W, H);
+    drawCockpitGauges(W, H);
   }
 }
 
@@ -3157,8 +3332,8 @@ function drawSearchlights() {
 
     // Glow circle around player when captured
     const captureRadius = Math.sqrt((p.x - homeX) ** 2 + (p.y - homeY) ** 2);
-    if (captureRadius < 300) {
-      const glowAlpha = 0.15 * (1 - captureRadius / 300);
+    if (captureRadius < 500) {
+      const glowAlpha = 0.15 * (1 - captureRadius / 500);
       ctx.beginPath();
       ctx.arc(p.x, p.y, 20 + Math.sin(t * 5) * 3, 0, Math.PI * 2);
       ctx.strokeStyle = `rgba(0, 255, 255, ${glowAlpha + 0.1})`;
@@ -3811,6 +3986,85 @@ function drawRadarEmpty() {
   rctx.font = '10px "Courier New", monospace';
   rctx.textAlign = 'center';
   rctx.fillText('RADAR', rW / 2, rH / 2 + 3);
+}
+
+// ── Cockpit instrument gauges (right side of screen) ──
+function drawCockpitGauges(W, H) {
+  const p = player;
+  const gaugeR = Math.min(W, H) * 0.055; // small gauge radius
+  const startX = W - gaugeR * 2 - 16;    // right side
+  const gap = gaugeR * 2.4;
+
+  // Draw 4 gauges: Airspeed, Altitude, Fuel, HP
+  const gauges = [
+    { label: 'SPD', value: p.speed / PLANE_MAX_SPEED, raw: Math.round(p.speed * PIXELS_PER_UNIT), unit: '', color: '#0ff', warnBelow: 0.3 },
+    { label: 'ALT', value: Math.max(0, 1 - p.y / (canvas.height * 0.8)), raw: Math.max(0, Math.round((canvas.height * 0.75 - p.y) / 3)), unit: '', color: '#0fa', warnBelow: 0.15 },
+    { label: 'FUEL', value: p.fuel / MAX_FUEL, raw: Math.round(p.fuel / MAX_FUEL * 100), unit: '%', color: '#0f0', warnBelow: 0.2 },
+    { label: 'HP', value: p.hp / PLAYER_MAX_HP, raw: p.hp, unit: '/' + PLAYER_MAX_HP, color: '#0ff', warnBelow: 0.34 }
+  ];
+
+  for (let i = 0; i < gauges.length; i++) {
+    const g = gauges[i];
+    const cx = startX + gaugeR;
+    const cy = H - 20 - gaugeR - i * gap;
+    const val = Math.max(0, Math.min(1, g.value));
+    const isWarning = val <= g.warnBelow;
+    const col = isWarning ? '#f44' : g.color;
+
+    // Background circle
+    ctx.beginPath();
+    ctx.arc(cx, cy, gaugeR, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0, 10, 20, 0.7)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0, 180, 100, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Arc track (dim)
+    const arcStart = Math.PI * 0.75;
+    const arcEnd = Math.PI * 2.25;
+    ctx.beginPath();
+    ctx.arc(cx, cy, gaugeR * 0.7, arcStart, arcEnd);
+    ctx.strokeStyle = 'rgba(0, 180, 100, 0.15)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Value arc (bright)
+    const valAngle = arcStart + (arcEnd - arcStart) * val;
+    neonGlow(ctx, col, 4);
+    ctx.beginPath();
+    ctx.arc(cx, cy, gaugeR * 0.7, arcStart, valAngle);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    // Needle
+    const needleAngle = valAngle;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(needleAngle) * gaugeR * 0.6, cy + Math.sin(needleAngle) * gaugeR * 0.6);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    clearGlow(ctx);
+
+    // Center dot
+    ctx.beginPath();
+    ctx.arc(cx, cy, 2, 0, Math.PI * 2);
+    ctx.fillStyle = col;
+    ctx.fill();
+
+    // Label
+    ctx.fillStyle = 'rgba(0, 180, 100, 0.5)';
+    ctx.font = (gaugeR * 0.4) + 'px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(g.label, cx, cy + gaugeR * 0.35);
+
+    // Numeric value
+    ctx.fillStyle = col;
+    ctx.font = 'bold ' + (gaugeR * 0.45) + 'px "Courier New", monospace';
+    ctx.fillText(g.raw + g.unit, cx, cy - gaugeR * 0.15);
+  }
 }
 
 // ── Circular radar scope (in-game HUD) ──
