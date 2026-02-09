@@ -2344,12 +2344,14 @@ function updateEnemies(dt) {
     // ── Grounded state: wait, then take off ──
     if (en.state === 'grounded') {
       en.takeoffTimer -= dt;
-      // Stay at airfield
+      // Stay at airfield — enforce position and correct facing angle every frame
       if (en.homeBase) {
         const groundY = getTerrainY(en.homeBase.x + en.homeBase.width / 2);
         en.y = groundY - 8;
         en.x = en.homeBase.x + en.homeBase.width / 2;
         en.vx = 0; en.vy = 0;
+        const facesRight = en.homeBase.x < WORLD_W / 2;
+        en.angle = facesRight ? 0 : Math.PI;
       }
       if (en.takeoffTimer <= 0) {
         en.state = 'flying';
