@@ -177,6 +177,8 @@ let score = 0;
 let lives = 5;
 let deathTimer = 0;
 let levelTimer = 0;
+let extraLifeMsg = 0;  // timer for "+1 LIFE" message
+let lastChanceMsg = 0; // timer for "LAST CHANCE" message
 let titlePlaneX = -200;
 
 // ── Input ──
@@ -1769,6 +1771,7 @@ function update(dt) {
         bullets = bullets.filter(b => b.friendly);
         bombs = bombs.filter(b => b.friendly !== false);
         flakShots = [];
+        if (lives === 1) lastChanceMsg = 3; // show warning for 3 seconds
         state = ST.PLAYING;
       }
     }
@@ -3031,6 +3034,11 @@ function checkLevelComplete() {
     state = ST.LEVEL_COMPLETE;
     levelTimer = 3;
     score += 1000 * level;
+    // Bonus life (max 9)
+    if (lives < 9) {
+      lives++;
+      extraLifeMsg = 2.5; // show message timer
+    }
   }
 }
 
@@ -3051,7 +3059,8 @@ function updateHUD() {
   hpEl.className = 'hud-val ' + (p.hp <= 1 ? 'red' : 'green');
 
   let livesStr = '';
-  for (let i = 0; i < 5; i++) livesStr += i < lives ? '●' : '○';
+  const maxDots = Math.max(5, lives);
+  for (let i = 0; i < maxDots; i++) livesStr += i < lives ? '●' : '○';
   document.getElementById('h-lives').textContent = livesStr;
 
   // Fuel bar with color transitions and warning
@@ -3520,6 +3529,35 @@ function draw() {
     ctx.fillStyle = '#0ff';
     ctx.font = '16px "Courier New", monospace';
     ctx.fillText(`+${1000 * level} bonus points`, W / 2, H / 2 + 20);
+  }
+
+  // ── Extra life / last chance messages ──
+  if (extraLifeMsg > 0) {
+    extraLifeMsg -= 0.016;
+    const alpha = Math.min(1, extraLifeMsg / 0.5);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    neonGlow(ctx, '#0f0', 10);
+    ctx.fillStyle = `rgba(0, 255, 0, ${alpha})`;
+    ctx.font = 'bold 22px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('+1 LIFE!', W / 2, H / 2 + 50);
+    clearGlow(ctx);
+    ctx.restore();
+  }
+  if (lastChanceMsg > 0) {
+    lastChanceMsg -= 0.016;
+    const alpha = Math.min(1, lastChanceMsg / 0.5);
+    const flash = Math.sin(Date.now() * 0.01) > 0 ? 1 : 0.4;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    neonGlow(ctx, '#f22', 14);
+    ctx.fillStyle = `rgba(255, 40, 40, ${alpha * flash})`;
+    ctx.font = 'bold 28px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('LAST CHANCE', W / 2, H / 2);
+    clearGlow(ctx);
+    ctx.restore();
   }
 
   // Top strip radar
