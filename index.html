@@ -757,6 +757,33 @@ function drawEnemyBases() {
     ctx.textAlign = 'center';
     ctx.fillText('ENEMY', eb.x + eb.width / 2, by - 8);
     clearGlow(ctx);
+
+    // ── Refueling progress bar for grounded enemies ──
+    for (const en of enemies) {
+      if (!en.alive || en.homeBase !== eb || en.state !== 'grounded') continue;
+      if (!en.takeoffTimerMax || en.takeoffTimerMax <= 0) continue;
+      const progress = 1 - (en.takeoffTimer / en.takeoffTimerMax);
+      const barW = 40;
+      const barH = 4;
+      const barX = eb.x + eb.width / 2 - barW / 2;
+      const barY = by - 20;
+      // Background
+      ctx.fillStyle = 'rgba(80, 0, 0, 0.6)';
+      ctx.fillRect(barX, barY, barW, barH);
+      // Fill — green when almost done, yellow mid, red starting
+      const col = progress > 0.7 ? '#0f0' : progress > 0.35 ? '#ff0' : '#f44';
+      ctx.fillStyle = col;
+      ctx.fillRect(barX, barY, barW * Math.min(progress, 1), barH);
+      // Border
+      ctx.strokeStyle = '#f55';
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(barX, barY, barW, barH);
+      // Label
+      ctx.fillStyle = '#f88';
+      ctx.font = '6px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('REFUEL', eb.x + eb.width / 2, barY - 2);
+    }
   }
 }
 
@@ -815,7 +842,11 @@ function launchNextFromBases() {
       const next = enemies.find(en => en.alive && en.homeBase === eb && en.state === 'hangar');
       if (!next) break;
       next.state = 'grounded';
-      next.takeoffTimer = 1 + Math.random() * 2; // quick scramble
+      // Bigger aircraft need longer refueling
+      if (next.type === 'zeppelin') next.takeoffTimer = 6 + Math.random() * 3;
+      else if (next.type === 'bomber') next.takeoffTimer = 4 + Math.random() * 2;
+      else next.takeoffTimer = 1 + Math.random() * 2;
+      next.takeoffTimerMax = next.takeoffTimer; // store for progress bar
       toLaunch--;
     }
   }
@@ -2573,7 +2604,13 @@ function updateBomberEnemy(en, dt, playerSafe) {
 function updateZeppelinEnemy(en, dt) {
   // Patrols left-right slowly, drops bombs periodically
   en.x += en.patrolDir * en.speed * dt;
-  en.y = 50 + Math.sin(Date.now() * 0.0005 + en.x * 0.001) * 30;
+  // Cruise altitude — rise gradually if below it (e.g. after takeoff)
+  const cruiseY = 50 + Math.sin(Date.now() * 0.0005 + en.x * 0.001) * 30;
+  if (en.y > cruiseY + 5) {
+    en.y -= 30 * dt; // gentle ascent
+  } else {
+    en.y = cruiseY;
+  }
 
   // Reverse at world edges
   if (en.x > WORLD_W - 500) en.patrolDir = -1;
