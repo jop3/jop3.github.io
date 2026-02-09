@@ -805,23 +805,25 @@ function spawnEnemies() {
       state: 'hangar' // hangar (hidden), grounded (on strip), flying, returning
     });
   }
-  // Launch first wave — one plane per base
+  // Launch first wave — two planes per base
   launchNextFromBases();
 }
 
-// Launch one plane from each base that has no active plane
+// Keep 2 active planes per base — launch from hangar as needed
 function launchNextFromBases() {
+  const MAX_ACTIVE_PER_BASE = 2;
   for (const eb of enemyBases) {
-    // Check if this base already has an active plane (grounded/flying/returning)
-    const hasActive = enemies.some(en =>
+    const activeCount = enemies.filter(en =>
       en.alive && en.homeBase === eb && (en.state === 'grounded' || en.state === 'flying' || en.state === 'returning')
-    );
-    if (hasActive) continue;
-    // Find next hangar plane for this base
-    const next = enemies.find(en => en.alive && en.homeBase === eb && en.state === 'hangar');
-    if (next) {
+    ).length;
+    // Launch planes until we have 2 active (or run out of hangar planes)
+    let toLaunch = MAX_ACTIVE_PER_BASE - activeCount;
+    while (toLaunch > 0) {
+      const next = enemies.find(en => en.alive && en.homeBase === eb && en.state === 'hangar');
+      if (!next) break;
       next.state = 'grounded';
-      next.takeoffTimer = 2 + Math.random() * 3;
+      next.takeoffTimer = 1 + Math.random() * 2; // quick scramble
+      toLaunch--;
     }
   }
 }
@@ -946,12 +948,12 @@ function addEngineTrail(x, y, vx, vy) {
 
 // ── Dragon spawning ──
 function spawnDragons() {
-  if (level >= 4 && Math.random() < 0.5) {
+  if (level >= 2 && Math.random() < 0.6) {
     const dx = 3000 + Math.random() * (WORLD_W - 4000);
     dragons.push({
       x: dx, y: 100 + Math.random() * 100,
       vx: 60, vy: 0,
-      hp: 3, alive: true,
+      hp: 4, alive: true,
       phase: 'circling', // circling, diving, breathing
       breathTimer: 5 + Math.random() * 5,
       wingFrame: 0,
@@ -1350,77 +1352,165 @@ function drawDragon(ctx, dragon) {
   ctx.save();
   ctx.translate(d.x, d.y);
 
-  const wingFlap = Math.sin(d.wingFrame) * 0.4;
+  const wingFlap = Math.sin(d.wingFrame) * 0.5;
+  const bodyUndulate = Math.sin(d.wingFrame * 0.6) * 3;
   const facingLeft = d.vx < 0;
   if (facingLeft) ctx.scale(-1, 1);
 
+  neonGlow(ctx, '#f40', 12);
+
+  // Serpentine body (thick, muscular)
+  ctx.strokeStyle = '#f40';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(-30, 0);
+  ctx.bezierCurveTo(-18, -6 + bodyUndulate, -4, 6 - bodyUndulate, 12, 0);
+  ctx.bezierCurveTo(20, -2 + bodyUndulate * 0.5, 30, 1, 38, 3);
+  ctx.stroke();
+
+  // Belly underside (lighter)
+  ctx.strokeStyle = '#fa6';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-28, 2);
+  ctx.bezierCurveTo(-16, 5, -2, 4, 14, 2);
+  ctx.stroke();
+
+  // Scales along back
+  ctx.strokeStyle = '#d30';
+  ctx.lineWidth = 1;
+  for (let s = -20; s < 15; s += 6) {
+    const sy = -4 + Math.sin((s + d.wingFrame * 3) * 0.15) * 2;
+    ctx.beginPath();
+    ctx.moveTo(s, sy);
+    ctx.lineTo(s + 3, sy - 3);
+    ctx.lineTo(s + 6, sy);
+    ctx.stroke();
+  }
+
+  // Head — larger with horns, jaw, and crest
+  ctx.strokeStyle = '#f40';
+  ctx.lineWidth = 2.5;
+  // Skull shape
+  ctx.beginPath();
+  ctx.moveTo(-30, 0);
+  ctx.lineTo(-36, -4);
+  ctx.lineTo(-40, -2);  // snout
+  ctx.lineTo(-38, 1);
+  ctx.lineTo(-34, 4);   // lower jaw
+  ctx.lineTo(-30, 1);
+  ctx.stroke();
+  // Upper jaw teeth
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-38, -1); ctx.lineTo(-37, 1);
+  ctx.moveTo(-36, -2); ctx.lineTo(-35, 0);
+  ctx.moveTo(-34, -2); ctx.lineTo(-33, 0);
+  ctx.stroke();
+  // Horns (two large curved)
+  ctx.strokeStyle = '#fa0';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-28, -3);
+  ctx.quadraticCurveTo(-26, -12, -22, -14);
+  ctx.moveTo(-24, -4);
+  ctx.quadraticCurveTo(-22, -11, -18, -12);
+  ctx.stroke();
+  // Eye (glowing)
+  ctx.fillStyle = '#ff0';
+  neonGlow(ctx, '#ff0', 6);
+  ctx.beginPath();
+  ctx.arc(-33, -2, 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#f00';
+  ctx.beginPath();
+  ctx.arc(-33, -2, 0.8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Wings — large bat-like with membrane and claws
   neonGlow(ctx, '#f40', 10);
   ctx.strokeStyle = '#f40';
   ctx.lineWidth = 2;
-
-  // Serpentine body (bezier curve)
+  const wUp = wingFlap * 25;
+  // Main wing frame
   ctx.beginPath();
-  ctx.moveTo(-25, 0);
-  ctx.bezierCurveTo(-15, -5, 0, 5, 15, 0);
-  ctx.bezierCurveTo(20, -2, 25, 0, 30, 2);
+  ctx.moveTo(-8, -3);
+  ctx.lineTo(-20, -25 + wUp);
+  ctx.lineTo(-5, -18 + wUp * 0.7);
+  ctx.lineTo(8, -28 + wUp);
+  ctx.lineTo(15, -12 + wUp * 0.5);
+  ctx.lineTo(12, -3);
   ctx.stroke();
-
-  // Head with horns and open jaw
-  ctx.beginPath();
-  ctx.moveTo(-25, 0);
-  ctx.lineTo(-32, -3);  // upper jaw
-  ctx.moveTo(-25, 0);
-  ctx.lineTo(-30, 3);   // lower jaw
-  // Horns
-  ctx.moveTo(-24, -2);
-  ctx.lineTo(-22, -8);
-  ctx.moveTo(-20, -3);
-  ctx.lineTo(-18, -9);
-  ctx.stroke();
-
-  // Eye
-  ctx.fillStyle = '#ff0';
-  ctx.beginPath();
-  ctx.arc(-26, -1, 1.5, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Bat-like wings (triangular, animated flap)
-  ctx.strokeStyle = '#f40';
-  ctx.beginPath();
-  ctx.moveTo(-5, -2);
-  ctx.lineTo(-15, -18 + wingFlap * 20);
-  ctx.lineTo(5, -8 + wingFlap * 10);
-  ctx.lineTo(10, -2);
-  ctx.stroke();
-  // Wing membrane lines
+  // Wing membrane
+  ctx.strokeStyle = '#d30';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(-10, -2);
-  ctx.lineTo(-12, -15 + wingFlap * 18);
-  ctx.moveTo(0, -2);
-  ctx.lineTo(-5, -12 + wingFlap * 14);
+  ctx.moveTo(-14, -3);
+  ctx.lineTo(-18, -22 + wUp);
+  ctx.moveTo(-2, -3);
+  ctx.lineTo(-8, -20 + wUp * 0.8);
+  ctx.moveTo(5, -3);
+  ctx.lineTo(4, -22 + wUp * 0.7);
+  ctx.moveTo(10, -3);
+  ctx.lineTo(12, -16 + wUp * 0.5);
+  ctx.stroke();
+  // Wing claws
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(-20, -25 + wUp); ctx.lineTo(-22, -27 + wUp);
+  ctx.moveTo(8, -28 + wUp); ctx.lineTo(9, -30 + wUp);
   ctx.stroke();
 
-  // Tail trailing behind
+  // Tail — long, spiked, sinuous
+  ctx.strokeStyle = '#f40';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(38, 3);
+  ctx.quadraticCurveTo(46, 8 + bodyUndulate, 52, 4 - bodyUndulate);
+  ctx.quadraticCurveTo(58, 0 + bodyUndulate, 62, 3);
+  ctx.stroke();
+  // Tail spikes
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.moveTo(30, 2);
-  ctx.quadraticCurveTo(38, 8, 42, 4);
-  ctx.lineTo(46, 6);
+  ctx.moveTo(48, 5); ctx.lineTo(50, -1);
+  ctx.moveTo(54, 3); ctx.lineTo(56, -2);
+  ctx.moveTo(60, 3); ctx.lineTo(63, -1);
+  ctx.stroke();
+  // Tail tip (arrow/spade)
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(62, 3);
+  ctx.lineTo(68, 0);
+  ctx.lineTo(65, 3);
+  ctx.lineTo(68, 6);
+  ctx.lineTo(62, 3);
+  ctx.stroke();
+
+  // Legs (small, tucked)
+  ctx.strokeStyle = '#d30';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-5, 3); ctx.lineTo(-8, 10); ctx.lineTo(-5, 10);
+  ctx.moveTo(8, 3); ctx.lineTo(5, 10); ctx.lineTo(8, 10);
   ctx.stroke();
 
   // Fire breath when in breathing phase
   if (d.phase === 'breathing') {
-    ctx.strokeStyle = '#ff0';
-    neonGlow(ctx, '#f80', 12);
-    ctx.lineWidth = 1;
-    for (let i = 0; i < 5; i++) {
-      const fx = -32 - i * 4 - Math.random() * 3;
-      const fy = (Math.random() - 0.5) * (4 + i * 2);
+    neonGlow(ctx, '#f80', 15);
+    for (let i = 0; i < 8; i++) {
+      const fx = -40 - i * 5 - Math.random() * 4;
+      const fy = (Math.random() - 0.5) * (5 + i * 3);
+      const r = 2 + Math.random() * 2;
+      const colors = ['#ff0', '#f80', '#f40', '#f22'];
+      ctx.fillStyle = colors[i % colors.length];
+      ctx.globalAlpha = 0.8 - i * 0.08;
       ctx.beginPath();
-      ctx.arc(fx, fy, 1.5 + Math.random(), 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.arc(fx, fy, r, 0, Math.PI * 2);
+      ctx.fill();
     }
+    ctx.globalAlpha = 1;
   }
 
   clearGlow(ctx);
@@ -2915,53 +3005,130 @@ function draw() {
       if (screenX < -50 || screenX > W + 50) continue;
 
       if (bg.type === 'eagle') {
-        // Wide wingspan, brown, slower soaring animation
-        const col = '#a72';
-        neonGlow(ctx, col, 5);
+        // Majestic eagle with visible body, tail feathers, hooked beak
+        const col = '#c84';
+        const t = Date.now() * 0.003 + b.x;
+        const wing = Math.sin(t) * 6;
+        const soar = Math.cos(t * 0.7) * 2; // gentle body bob
+        neonGlow(ctx, col, 6);
         ctx.strokeStyle = col;
-        ctx.lineWidth = 1.5;
-        const wing = Math.sin(Date.now() * 0.004 + b.x) * 5;
+        ctx.lineWidth = 2;
+        // Wings with feathered tips
         ctx.beginPath();
-        ctx.moveTo(b.x - 14, b.y + wing);
-        ctx.lineTo(b.x - 4, b.y + wing * 0.3);
-        ctx.lineTo(b.x, b.y);
-        ctx.lineTo(b.x + 4, b.y + wing * 0.3);
-        ctx.lineTo(b.x + 14, b.y + wing);
+        ctx.moveTo(b.x - 18, b.y + wing);
+        ctx.lineTo(b.x - 12, b.y + wing * 0.6);
+        ctx.lineTo(b.x - 5, b.y + wing * 0.2);
+        ctx.lineTo(b.x, b.y + soar);
+        ctx.lineTo(b.x + 5, b.y + wing * 0.2);
+        ctx.lineTo(b.x + 12, b.y + wing * 0.6);
+        ctx.lineTo(b.x + 18, b.y + wing);
         ctx.stroke();
-        // Body/tail
+        // Wingtip feathers
+        ctx.lineWidth = 1;
+        for (let f = -1; f <= 1; f += 2) {
+          ctx.beginPath();
+          ctx.moveTo(b.x + f * 16, b.y + wing * 0.8);
+          ctx.lineTo(b.x + f * 19, b.y + wing + 2);
+          ctx.moveTo(b.x + f * 17, b.y + wing * 0.9);
+          ctx.lineTo(b.x + f * 20, b.y + wing + 1);
+          ctx.stroke();
+        }
+        // Body
+        ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(b.x, b.y);
-        ctx.lineTo(b.x + 5, b.y + 1);
+        ctx.ellipse(b.x, b.y + soar, 5, 2.5, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        // Head with hooked beak
+        ctx.fillStyle = '#fa8';
+        ctx.beginPath();
+        ctx.arc(b.x - 7, b.y + soar - 1, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ff0';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(b.x - 9, b.y + soar - 1);
+        ctx.lineTo(b.x - 12, b.y + soar);
+        ctx.lineTo(b.x - 11, b.y + soar + 1);
+        ctx.stroke();
+        // Eye
+        ctx.fillStyle = '#ff0';
+        ctx.beginPath();
+        ctx.arc(b.x - 7, b.y + soar - 1.5, 0.8, 0, Math.PI * 2);
+        ctx.fill();
+        // Tail feathers
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(b.x + 5, b.y + soar);
+        ctx.lineTo(b.x + 10, b.y + soar + 2);
+        ctx.moveTo(b.x + 5, b.y + soar + 1);
+        ctx.lineTo(b.x + 11, b.y + soar + 3);
+        ctx.moveTo(b.x + 5, b.y + soar - 1);
+        ctx.lineTo(b.x + 10, b.y + soar);
         ctx.stroke();
         clearGlow(ctx);
       } else if (bg.type === 'goose') {
-        // Larger V-shape, thicker lines
+        // Goose with stretched neck and rounded body
         const col = '#dda';
+        const t = Date.now() * 0.007 + b.x * 0.5;
+        const wing = Math.sin(t) * 6;
         neonGlow(ctx, col, 4);
         ctx.strokeStyle = col;
         ctx.lineWidth = 1.5;
-        const wing = Math.sin(Date.now() * 0.008 + b.x) * 5;
+        // Wings
         ctx.beginPath();
         ctx.moveTo(b.x - 10, b.y + wing);
-        ctx.lineTo(b.x, b.y);
-        ctx.lineTo(b.x + 10, b.y + wing);
+        ctx.quadraticCurveTo(b.x - 5, b.y + wing * 0.3, b.x, b.y);
+        ctx.quadraticCurveTo(b.x + 5, b.y + wing * 0.3, b.x + 10, b.y + wing);
         ctx.stroke();
-        // Body dot
-        ctx.fillStyle = col;
+        // Body (oval)
         ctx.beginPath();
-        ctx.arc(b.x, b.y, 1.5, 0, Math.PI * 2);
-        ctx.fill();
-        clearGlow(ctx);
-      } else {
-        // Sparrows: small, fast V-shape
-        neonGlow(ctx, '#aaf', 4);
-        ctx.strokeStyle = '#aaf';
+        ctx.ellipse(b.x, b.y + 1, 4, 2, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        // Long neck stretching forward
         ctx.lineWidth = 1;
         ctx.beginPath();
-        const wing = Math.sin(Date.now() * 0.01 + b.x) * 4;
+        ctx.moveTo(b.x - 3, b.y);
+        ctx.quadraticCurveTo(b.x - 6, b.y - 3, b.x - 9, b.y - 2);
+        ctx.stroke();
+        // Head
+        ctx.fillStyle = '#333';
+        ctx.beginPath();
+        ctx.arc(b.x - 9, b.y - 2, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+        // Beak
+        ctx.strokeStyle = '#fa0';
+        ctx.beginPath();
+        ctx.moveTo(b.x - 10.5, b.y - 2);
+        ctx.lineTo(b.x - 13, b.y - 1.5);
+        ctx.stroke();
+        clearGlow(ctx);
+      } else {
+        // Sparrows: small, chirpy with visible body and quick wingbeats
+        const col = '#aaf';
+        const t = Date.now() * 0.015 + b.x;
+        const wing = Math.sin(t) * 4;
+        neonGlow(ctx, col, 3);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1;
+        // Quick fluttering wings
+        ctx.beginPath();
         ctx.moveTo(b.x - 6, b.y + wing);
-        ctx.lineTo(b.x, b.y);
+        ctx.lineTo(b.x - 2, b.y);
+        ctx.lineTo(b.x + 2, b.y);
         ctx.lineTo(b.x + 6, b.y + wing);
+        ctx.stroke();
+        // Round little body
+        ctx.fillStyle = col;
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y + 0.5, 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        // Tail
+        ctx.beginPath();
+        ctx.moveTo(b.x + 2, b.y + 1);
+        ctx.lineTo(b.x + 5, b.y + 2);
         ctx.stroke();
         clearGlow(ctx);
       }
