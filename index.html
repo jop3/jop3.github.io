@@ -2522,7 +2522,7 @@ function updateBomberEnemy(en, dt, playerSafe) {
     }
   }
 
-  // ── Defensive turret guns (both sides) — fire at player when nearby ──
+  // ── Defensive turret guns (both sides) — limited firing arc ──
   if (!en.turretTimer) en.turretTimer = 0;
   en.turretTimer -= dt;
   if (en.turretTimer <= 0 && !playerSafe) {
@@ -2531,23 +2531,35 @@ function updateBomberEnemy(en, dt, playerSafe) {
     const tdist = Math.sqrt(tdx * tdx + tdy * tdy);
     if (tdist < 500) {
       const aimAngle = Math.atan2(tdy, tdx);
-      // Top turret
-      const spread1 = (Math.random() - 0.5) * 0.3;
-      bullets.push({
-        x: en.x + Math.sin(en.angle) * 12, y: en.y - Math.cos(en.angle) * 12,
-        vx: Math.cos(aimAngle + spread1) * BULLET_SPEED * 0.65,
-        vy: Math.sin(aimAngle + spread1) * BULLET_SPEED * 0.65,
-        life: 0.8, friendly: false
-      });
-      // Bottom turret
-      const spread2 = (Math.random() - 0.5) * 0.3;
-      bullets.push({
-        x: en.x - Math.sin(en.angle) * 12, y: en.y + Math.cos(en.angle) * 12,
-        vx: Math.cos(aimAngle + spread2) * BULLET_SPEED * 0.65,
-        vy: Math.sin(aimAngle + spread2) * BULLET_SPEED * 0.65,
-        life: 0.8, friendly: false
-      });
-      en.turretTimer = (0.35 + Math.random() * 0.25) * fireIntervalMult;
+      // Relative angle from bomber's heading — turrets can't fire forward or backward
+      let relAngle = aimAngle - en.angle;
+      while (relAngle > Math.PI) relAngle -= Math.PI * 2;
+      while (relAngle < -Math.PI) relAngle += Math.PI * 2;
+      const absRel = Math.abs(relAngle);
+      // Turrets cover broadside arcs: ~30° to ~150° off the nose (no forward/rear fire)
+      if (absRel > 0.5 && absRel < 2.6) {
+        // Top turret fires when player is above or level
+        if (relAngle < 0 || Math.abs(relAngle) > Math.PI * 0.5) {
+          const spread1 = (Math.random() - 0.5) * 0.35;
+          bullets.push({
+            x: en.x + Math.sin(en.angle) * 12, y: en.y - Math.cos(en.angle) * 12,
+            vx: Math.cos(aimAngle + spread1) * BULLET_SPEED * 0.6,
+            vy: Math.sin(aimAngle + spread1) * BULLET_SPEED * 0.6,
+            life: 0.7, friendly: false
+          });
+        }
+        // Bottom turret fires when player is below or level
+        if (relAngle > 0 || Math.abs(relAngle) > Math.PI * 0.5) {
+          const spread2 = (Math.random() - 0.5) * 0.35;
+          bullets.push({
+            x: en.x - Math.sin(en.angle) * 12, y: en.y + Math.cos(en.angle) * 12,
+            vx: Math.cos(aimAngle + spread2) * BULLET_SPEED * 0.6,
+            vy: Math.sin(aimAngle + spread2) * BULLET_SPEED * 0.6,
+            life: 0.7, friendly: false
+          });
+        }
+        en.turretTimer = (0.45 + Math.random() * 0.3) * fireIntervalMult;
+      }
     }
   }
   // Store turret aim angle for drawing
