@@ -1926,6 +1926,27 @@ function updatePlayer(dt) {
       addEngineTrail(tx, ty, -p.vx * 0.3, -p.vy * 0.3);
     }
 
+    // Low fuel warning — sputtering smoke from engine
+    if (!p.landed && !p.burning && p.fuel > 0) {
+      const fuelRatio = p.fuel / MAX_FUEL;
+      if (fuelRatio < 0.25) {
+        const rad = getPlaneRadians(p);
+        const ex = p.x - Math.cos(rad) * 18;
+        const ey = p.y - Math.sin(rad) * 18;
+        // Sputtering dark smoke — more frequent as fuel drops
+        const smokeChance = fuelRatio < 0.10 ? 0.5 : 0.25;
+        if (Math.random() < smokeChance) {
+          addParticle(ex + (Math.random() - 0.5) * 6, ey + (Math.random() - 0.5) * 6,
+            (Math.random() - 0.5) * 15, -15 - Math.random() * 10, 0.5,
+            '#444', 2 + Math.random());
+        }
+        // Occasional orange sputter below 10%
+        if (fuelRatio < 0.10 && Math.random() < 0.15) {
+          addParticle(ex, ey, (Math.random() - 0.5) * 20, -10, 0.25, '#f80', 1.5);
+        }
+      }
+    }
+
     // Clamp at world edges (barrier mountains prevent passage)
     if (p.x < 10) { p.x = 10; p.vx = Math.abs(p.vx) * 0.3; }
     if (p.x >= WORLD_W - 10) { p.x = WORLD_W - 10; p.vx = -Math.abs(p.vx) * 0.3; }
@@ -3057,6 +3078,11 @@ function draw() {
       else if (player.burning) pColor = '#f44';
       else if (player.hp === 2) pColor = '#ff0';
       else if (player.hp <= 1) pColor = '#f80';
+      // Low fuel flashing — red pulse when below 15%
+      const fuelRatio = player.fuel / MAX_FUEL;
+      if (!player.burning && fuelRatio < 0.15 && fuelRatio > 0) {
+        if (Math.sin(Date.now() * 0.01) > 0) pColor = '#f22';
+      }
       // Hit flash override
       if (player.hitFlash > 0) pColor = '#fff';
       drawBiplane(ctx, player.x, player.y, pDrawAngle, pFacingLeft, pColor, undefined, player.orient);
