@@ -129,7 +129,7 @@ const ZEPPELIN_BOMB_INTERVAL = 80;
 const ENEMY_SPECS = {
   biplane: { hp: 2, speed: 200, fireInterval: ENEMY_FIRE_INTERVAL, score: 300, color: '#f0a', hitW: 20, hitH: 12 },
   jet:     { hp: 2, speed: JET_SPEED, fireInterval: JET_FIRE_INTERVAL, score: 500, color: '#f55', hitW: 20, hitH: 12 },
-  bomber:  { hp: 4, speed: BOMBER_SPEED, fireInterval: BOMBER_BOMB_INTERVAL, score: 700, color: '#fa0', hitW: 30, hitH: 15 },
+  bomber:  { hp: 5, speed: BOMBER_SPEED, fireInterval: BOMBER_BOMB_INTERVAL, score: 700, color: '#fa0', hitW: 30, hitH: 15 },
   zeppelin:{ hp: 8, speed: ZEPPELIN_SPEED, fireInterval: ZEPPELIN_BOMB_INTERVAL, score: 1500, color: '#aaf', hitW: 50, hitH: 20 }
 };
 
@@ -1275,6 +1275,26 @@ function drawBomber(ctx, x, y, angle, facingLeft, color, scale) {
   ctx.lineTo(10, 4);
   ctx.stroke();
   ctx.setLineDash([]);
+
+  // ── Defensive turret guns (top and bottom) ──
+  ctx.lineWidth = 1.5;
+  // Top turret (dorsal) — bubble + gun barrel
+  ctx.strokeStyle = color;
+  ctx.beginPath();
+  ctx.arc(2, -6, 3, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(2, -6);
+  ctx.lineTo(2 + 7, -6 - 4);
+  ctx.stroke();
+  // Bottom turret (ventral) — bubble + gun barrel
+  ctx.beginPath();
+  ctx.arc(2, 6, 3, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(2, 6);
+  ctx.lineTo(2 + 7, 6 + 4);
+  ctx.stroke();
 
   // Two spinning propellers
   ctx.lineWidth = 2;
@@ -2500,6 +2520,39 @@ function updateBomberEnemy(en, dt, playerSafe) {
       bombs.push({ x: en.x, y: en.y + 10, vx: en.vx * 0.3, vy: 20, life: 5, friendly: false });
       en.fireTimer = (BOMBER_BOMB_INTERVAL + Math.random() * 40 | 0) * fireIntervalMult;
     }
+  }
+
+  // ── Defensive turret guns (both sides) — fire at player when nearby ──
+  if (!en.turretTimer) en.turretTimer = 0;
+  en.turretTimer -= dt;
+  if (en.turretTimer <= 0 && !playerSafe) {
+    const tdx = player.x - en.x;
+    const tdy = player.y - en.y;
+    const tdist = Math.sqrt(tdx * tdx + tdy * tdy);
+    if (tdist < 500) {
+      const aimAngle = Math.atan2(tdy, tdx);
+      // Top turret
+      const spread1 = (Math.random() - 0.5) * 0.3;
+      bullets.push({
+        x: en.x + Math.sin(en.angle) * 12, y: en.y - Math.cos(en.angle) * 12,
+        vx: Math.cos(aimAngle + spread1) * BULLET_SPEED * 0.65,
+        vy: Math.sin(aimAngle + spread1) * BULLET_SPEED * 0.65,
+        life: 0.8, friendly: false
+      });
+      // Bottom turret
+      const spread2 = (Math.random() - 0.5) * 0.3;
+      bullets.push({
+        x: en.x - Math.sin(en.angle) * 12, y: en.y + Math.cos(en.angle) * 12,
+        vx: Math.cos(aimAngle + spread2) * BULLET_SPEED * 0.65,
+        vy: Math.sin(aimAngle + spread2) * BULLET_SPEED * 0.65,
+        life: 0.8, friendly: false
+      });
+      en.turretTimer = (0.35 + Math.random() * 0.25) * fireIntervalMult;
+    }
+  }
+  // Store turret aim angle for drawing
+  if (!playerSafe && dist < 500) {
+    en.turretAngle = Math.atan2(player.y - en.y, player.x - en.x);
   }
 
   return dist;
