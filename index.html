@@ -2645,28 +2645,39 @@ function updateEnemies(dt) {
       if (en.state === 'returning' && en.homeBase) {
         // Fly back to home base
         const homeX = en.homeBase.x + en.homeBase.width / 2;
-        const homeY = getTerrainY(homeX) - 20;
-        const dx = homeX - en.x;
-        const dy = homeY - en.y;
-        dist = Math.sqrt(dx * dx + dy * dy);
-        const desiredAngle = Math.atan2(dy, dx);
-        let angleDiff = desiredAngle - en.angle;
-        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-        en.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), 2.0 * dt);
-        en.vx = Math.cos(en.angle) * en.speed * 0.7;
-        en.vy = Math.sin(en.angle) * en.speed * 0.7;
-        en.x += en.vx * dt;
-        en.y += en.vy * dt;
+        const homeGroundY = getTerrainY(homeX);
+        const horizDist = Math.abs(en.x - homeX);
 
-        // Terrain clamping — allow descent near base for landing
-        const retGroundY = getTerrainY(en.x);
-        const nearBaseForClamp = en.homeBase && Math.abs(en.x - (en.homeBase.x + en.homeBase.width / 2)) < 80;
-        if (nearBaseForClamp) {
-          // Near home base — allow descent to landing altitude
-          if (en.y > retGroundY - 10) en.y = retGroundY - 10;
+        if (horizDist > 120) {
+          // ── Phase 1: Cruise toward base at safe altitude ──
+          const cruiseY = homeGroundY - 60;
+          const dx = homeX - en.x;
+          const dy = cruiseY - en.y;
+          dist = Math.sqrt(dx * dx + dy * dy);
+          const desiredAngle = Math.atan2(dy, dx);
+          let angleDiff = desiredAngle - en.angle;
+          while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+          while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+          en.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), 2.5 * dt);
+          en.vx = Math.cos(en.angle) * en.speed * 0.7;
+          en.vy = Math.sin(en.angle) * en.speed * 0.7;
+          en.x += en.vx * dt;
+          en.y += en.vy * dt;
         } else {
-          // Away from base — crash if touching terrain
+          // ── Phase 2: Final approach — descend directly onto runway ──
+          const landingY = homeGroundY - 8;
+          en.x += (homeX - en.x) * 2.0 * dt; // drift toward center
+          en.y += (landingY - en.y) * 1.5 * dt; // descend to landing altitude
+          en.vx = 0;
+          en.vy = 0;
+          const facesRight = en.homeBase.x < WORLD_W / 2;
+          en.angle = facesRight ? 0 : Math.PI;
+          dist = Math.abs(en.y - landingY);
+        }
+
+        // Terrain clamping — away from base, crash on terrain contact
+        const retGroundY = getTerrainY(en.x);
+        if (horizDist > 120) {
           if (en.y > retGroundY - 12) {
             en.alive = false;
             addExplosion(en.x, en.y, 25, false);
@@ -2674,12 +2685,13 @@ function updateEnemies(dt) {
             launchNextFromBases();
             continue;
           }
+        } else {
+          if (en.y > retGroundY - 6) en.y = retGroundY - 6;
         }
 
-        // Landing check
-        const nearBase = Math.abs(en.x - homeX) < 40;
-        const groundY = getTerrainY(en.x);
-        if (nearBase && en.y >= groundY - 12) {
+        // Landing check — close to runway and low enough
+        const nearBase = horizDist < 30;
+        if (nearBase && en.y >= homeGroundY - 12) {
           // Landed — return to hangar and launch next plane
           en.state = 'hangar';
           en.landed = true;
