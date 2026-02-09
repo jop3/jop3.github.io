@@ -713,9 +713,11 @@ function flattenTerrainForBase(bx) {
 function drawEnemyBases() {
   for (const eb of enemyBases) {
     const by = getTerrainY(eb.x + eb.width / 2);
+    const facesRight = eb.x < WORLD_W / 2;
     neonGlow(ctx, '#f55', 4);
     ctx.strokeStyle = '#f55';
     ctx.lineWidth = 2;
+    // Runway
     ctx.beginPath();
     ctx.moveTo(eb.x, by);
     ctx.lineTo(eb.x + eb.width, by);
@@ -729,6 +731,32 @@ function drawEnemyBases() {
     ctx.lineTo(eb.x + eb.width - 10, by - 3);
     ctx.stroke();
     ctx.setLineDash([]);
+    // Hangar — small building at the far end of the strip
+    const hangarX = facesRight ? eb.x + eb.width + 8 : eb.x - 38;
+    const hangarW = 30;
+    const hangarH = 22;
+    ctx.strokeStyle = '#a44';
+    ctx.lineWidth = 1.5;
+    // Hangar body
+    ctx.strokeRect(hangarX, by - hangarH, hangarW, hangarH);
+    // Arched roof
+    ctx.beginPath();
+    ctx.moveTo(hangarX, by - hangarH);
+    ctx.quadraticCurveTo(hangarX + hangarW / 2, by - hangarH - 10, hangarX + hangarW, by - hangarH);
+    ctx.stroke();
+    // Door opening
+    ctx.strokeStyle = '#822';
+    ctx.lineWidth = 1;
+    const doorX = facesRight ? hangarX : hangarX + hangarW - 14;
+    ctx.strokeRect(doorX, by - 14, 14, 14);
+    // Count planes in hangar for this base
+    const hangarCount = enemies.filter(en => en.alive && en.homeBase === eb && en.state === 'hangar').length;
+    if (hangarCount > 0) {
+      ctx.fillStyle = '#f55';
+      ctx.font = '7px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(hangarCount + 'x', hangarX + hangarW / 2, by - hangarH - 12);
+    }
     // Label
     ctx.fillStyle = '#f55';
     ctx.font = '8px "Courier New", monospace';
@@ -743,8 +771,6 @@ function spawnEnemies() {
   spawnEnemyBases();
   const count = 3 + level + Math.floor(Math.random() * 2); // minimum 4 on level 1
   let zeppelinCount = 0;
-  // Track parking slots per base
-  const baseSlots = {};
   for (let i = 0; i < count; i++) {
     // Randomized type selection — all types can appear from level 1
     let type = 'biplane';
@@ -754,18 +780,12 @@ function spawnEnemies() {
     else if (r < 0.45) type = 'jet';
 
     const spec = ENEMY_SPECS[type];
-    // Assign to an enemy base — alternate between left and right
+    // Assign to an enemy base — alternate between bases
     const eb = enemyBases[i % enemyBases.length];
-    const baseKey = eb.x;
-    if (!baseSlots[baseKey]) baseSlots[baseKey] = 0;
-    const slot = baseSlots[baseKey]++;
-    const slotX = eb.x + 20 + slot * 30;
-    const ey = getTerrainY(slotX) - 8;
-    // Direction: left base faces right, right base faces left
     const facesRight = eb.x < WORLD_W / 2;
 
     enemies.push({
-      x: slotX, y: ey,
+      x: eb.x + BASE_WIDTH / 2, y: getTerrainY(eb.x + BASE_WIDTH / 2) - 8,
       vx: 0, vy: 0,
       angle: facesRight ? 0 : Math.PI,
       hp: spec.hp, alive: true,
@@ -775,14 +795,33 @@ function spawnEnemies() {
       stalled: false,
       stallTimer: 0,
       patrolDir: facesRight ? 1 : -1,
-      parkSlot: slot,
+      parkSlot: i,
       // Airfield state
       fuel: ENEMY_MAX_FUEL,
       landed: true,
       homeBase: eb,
-      takeoffTimer: 2 + Math.random() * 3 + i * 2, // stagger takeoffs
-      state: 'grounded' // grounded, flying, returning
+      takeoffTimer: 0,
+      state: 'hangar' // hangar (hidden), grounded (on strip), flying, returning
     });
+  }
+  // Launch first wave — one plane per base
+  launchNextFromBases();
+}
+
+// Launch one plane from each base that has no active plane
+function launchNextFromBases() {
+  for (const eb of enemyBases) {
+    // Check if this base already has an active plane (grounded/flying/returning)
+    const hasActive = enemies.some(en =>
+      en.alive && en.homeBase === eb && (en.state === 'grounded' || en.state === 'flying' || en.state === 'returning')
+    );
+    if (hasActive) continue;
+    // Find next hangar plane for this base
+    const next = enemies.find(en => en.alive && en.homeBase === eb && en.state === 'hangar');
+    if (next) {
+      next.state = 'grounded';
+      next.takeoffTimer = 2 + Math.random() * 3;
+    }
   }
 }
 
@@ -2059,7 +2098,7 @@ function updateBullets(dt) {
     // Friendly bullets hit enemies (type-aware hitbox)
     if (b.friendly) {
       for (const en of enemies) {
-        if (!en.alive) continue;
+        if (!en.alive || en.state === 'hangar') continue;
         const spec = ENEMY_SPECS[en.type] || ENEMY_SPECS.biplane;
         if (Math.abs(b.x - en.x) < spec.hitW && Math.abs(b.y - en.y) < spec.hitH) {
           en.hp--;
@@ -2068,6 +2107,7 @@ function updateBullets(dt) {
             addExplosion(en.x, en.y, 20, true);
             playBoom(false);
             score += spec.score;
+            launchNextFromBases();
           }
           bullets.splice(i, 1);
           break;
@@ -2348,17 +2388,18 @@ function updateEnemies(dt) {
   for (const en of enemies) {
     if (!en.alive) continue;
 
-    // ── Grounded state: wait, then take off ──
+    // ── Hangar state: hidden, waiting for launch ──
+    if (en.state === 'hangar') continue;
+
+    // ── Grounded state: on the strip, about to take off ──
     if (en.state === 'grounded') {
       en.takeoffTimer -= dt;
-      // Stay at airfield — enforce position and correct facing angle every frame
+      // Stay at airfield center — enforce position and facing angle
       if (en.homeBase) {
-        // Spread planes across the airfield using their parkSlot
-        const slot = en.parkSlot || 0;
-        const slotX = en.homeBase.x + 20 + slot * 30;
-        const groundY = getTerrainY(slotX);
+        const stripX = en.homeBase.x + BASE_WIDTH / 2;
+        const groundY = getTerrainY(stripX);
         en.y = groundY - 8;
-        en.x = slotX;
+        en.x = stripX;
         en.vx = 0; en.vy = 0;
         const facesRight = en.homeBase.x < WORLD_W / 2;
         en.angle = facesRight ? 0 : Math.PI;
@@ -2422,21 +2463,13 @@ function updateEnemies(dt) {
         const nearBase = Math.abs(en.x - homeX) < 40;
         const groundY = getTerrainY(en.x);
         if (nearBase && en.y >= groundY - 15) {
-          en.state = 'grounded';
+          // Landed — return to hangar and launch next plane
+          en.state = 'hangar';
           en.landed = true;
           en.vx = 0; en.vy = 0;
-          en.y = groundY - 8;
-          // Assign parking slot — count how many are already parked at this base
-          let slotsUsed = 0;
-          for (const other of enemies) {
-            if (other !== en && other.alive && other.state === 'grounded' && other.homeBase === en.homeBase) slotsUsed++;
-          }
-          en.parkSlot = slotsUsed;
-          // Reset angle so grounded plane faces correct direction
-          const facesRight = en.homeBase.x < WORLD_W / 2;
-          en.angle = facesRight ? 0 : Math.PI;
           en.fuel = ENEMY_MAX_FUEL;
-          en.takeoffTimer = 3 + Math.random() * 4;
+          en.hp = ENEMY_SPECS[en.type].hp; // repair in hangar
+          launchNextFromBases();
           continue;
         }
       } else {
@@ -2484,6 +2517,7 @@ function updateEnemies(dt) {
         en.alive = false;
         addExplosion(en.x, en.y, 20, true);
         damagePlayer(3); // Collision is devastating
+        launchNextFromBases();
       }
     }
   }
@@ -2968,7 +3002,7 @@ function draw() {
   // Enemies (dispatch by type)
   // Enemies — compute facingLeft from angle to prevent upside-down rendering
   for (const en of enemies) {
-    if (!en.alive) continue;
+    if (!en.alive || en.state === 'hangar') continue;
     const screenX = en.x - camX;
     const margin = en.type === 'zeppelin' ? 150 : 100;
     if (screenX < -margin || screenX > W + margin) continue;
@@ -4083,7 +4117,7 @@ function drawRadar() {
 
   // Enemies (color-coded by type)
   for (const en of enemies) {
-    if (!en.alive) continue;
+    if (!en.alive || en.state === 'hangar') continue;
     const spec = ENEMY_SPECS[en.type];
     rctx.fillStyle = spec.color;
     const sz = en.type === 'zeppelin' ? 5 : 3;
@@ -4393,7 +4427,7 @@ function drawRadarScope(W, H) {
 
   // ── Enemies (chevrons pointing in travel direction) ──
   for (const en of enemies) {
-    if (!en.alive) continue;
+    if (!en.alive || en.state === 'hangar') continue;
     const p = toScope(en.x, en.y);
     if (!p) continue;
     const spec = ENEMY_SPECS[en.type];
