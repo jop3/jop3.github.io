@@ -2755,9 +2755,20 @@ function updateBirds(dt) {
         if (Math.abs(b.x - player.x) < hitRange && Math.abs(b.y - player.y) < 10) {
           b.alive = false;
           if (bg.type === 'sparrow') {
-            // Sparrows: harmless to biplane, just feather particles
-            for (let k = 0; k < 8; k++) {
-              addParticle(b.x, b.y, (Math.random()-0.5)*40, (Math.random()-0.5)*40, 0.3, Math.random()<0.5?'#ddd':'#aaa', 1.5);
+            // Sparrows: harmless — big comedic feather explosion!
+            const featherColors = ['#fff', '#eee', '#ddd', '#ccc', '#aaf', '#bbf', '#ffd', '#fec'];
+            for (let k = 0; k < 35; k++) {
+              const angle = Math.random() * Math.PI * 2;
+              const speed = 20 + Math.random() * 80;
+              const vx = Math.cos(angle) * speed + (player.vx || 0) * 0.3;
+              const vy = Math.sin(angle) * speed - 15; // bias upward for poof effect
+              const col = featherColors[Math.floor(Math.random() * featherColors.length)];
+              addParticle(b.x + (Math.random()-0.5)*8, b.y + (Math.random()-0.5)*6, vx, vy, 0.8 + Math.random() * 0.6, col, 1.5 + Math.random() * 2);
+            }
+            // A few bigger slow-floating feathers
+            for (let k = 0; k < 6; k++) {
+              const col = Math.random() < 0.5 ? '#fff' : '#aaf';
+              addParticle(b.x + (Math.random()-0.5)*12, b.y, (Math.random()-0.5)*30, -10 + Math.random()*20, 1.5 + Math.random(), col, 3 + Math.random() * 2);
             }
           } else {
             // Geese and eagles: damage, not instant kill
@@ -3036,6 +3047,12 @@ function draw() {
         const t = Date.now() * 0.003 + b.x;
         const wing = Math.sin(t) * 6;
         const soar = Math.cos(t * 0.7) * 2; // gentle body bob
+        // Danger aura — pulsing red glow
+        const dangerPulse = 0.25 + Math.sin(Date.now() * 0.006) * 0.15;
+        ctx.fillStyle = `rgba(255, 40, 40, ${dangerPulse})`;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y + soar, 14, 0, Math.PI * 2);
+        ctx.fill();
         neonGlow(ctx, col, 6);
         ctx.strokeStyle = col;
         ctx.lineWidth = 2;
@@ -3098,6 +3115,12 @@ function draw() {
         const col = '#dda';
         const t = Date.now() * 0.007 + b.x * 0.5;
         const wing = Math.sin(t) * 6;
+        // Danger aura — pulsing red glow
+        const dangerPulse = 0.2 + Math.sin(Date.now() * 0.006 + 1) * 0.12;
+        ctx.fillStyle = `rgba(255, 40, 40, ${dangerPulse})`;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 10, 0, Math.PI * 2);
+        ctx.fill();
         neonGlow(ctx, col, 4);
         ctx.strokeStyle = col;
         ctx.lineWidth = 1.5;
