@@ -743,6 +743,8 @@ function spawnEnemies() {
   spawnEnemyBases();
   const count = 3 + level + Math.floor(Math.random() * 2); // minimum 4 on level 1
   let zeppelinCount = 0;
+  // Track parking slots per base
+  const baseSlots = {};
   for (let i = 0; i < count; i++) {
     // Randomized type selection — all types can appear from level 1
     let type = 'biplane';
@@ -754,13 +756,16 @@ function spawnEnemies() {
     const spec = ENEMY_SPECS[type];
     // Assign to an enemy base — alternate between left and right
     const eb = enemyBases[i % enemyBases.length];
-    const ex = eb.x + eb.width / 2;
-    const ey = getTerrainY(ex) - 8;
+    const baseKey = eb.x;
+    if (!baseSlots[baseKey]) baseSlots[baseKey] = 0;
+    const slot = baseSlots[baseKey]++;
+    const slotX = eb.x + 20 + slot * 30;
+    const ey = getTerrainY(slotX) - 8;
     // Direction: left base faces right, right base faces left
     const facesRight = eb.x < WORLD_W / 2;
 
     enemies.push({
-      x: ex, y: ey,
+      x: slotX, y: ey,
       vx: 0, vy: 0,
       angle: facesRight ? 0 : Math.PI,
       hp: spec.hp, alive: true,
@@ -770,6 +775,7 @@ function spawnEnemies() {
       stalled: false,
       stallTimer: 0,
       patrolDir: facesRight ? 1 : -1,
+      parkSlot: slot,
       // Airfield state
       fuel: ENEMY_MAX_FUEL,
       landed: true,
@@ -2218,8 +2224,9 @@ function updateBombs(dt) {
 function updateChaserEnemy(en, dt, playerSafe, turnRate, bulletSpeedMult) {
   let dx, dy, dist, desiredAngle;
   if (playerSafe) {
-    const patrolX = 3000 + ((en.x * 7) % 5000);
-    const patrolY = 150;
+    // Stable patrol point based on parking slot, not current position
+    const patrolX = 2000 + ((en.parkSlot || 0) * 1700) % (WORLD_W - 4000);
+    const patrolY = 100 + ((en.parkSlot || 0) * 50) % 150;
     dx = patrolX - en.x;
     dy = patrolY - en.y;
     dist = Math.sqrt(dx * dx + dy * dy);
@@ -2346,9 +2353,12 @@ function updateEnemies(dt) {
       en.takeoffTimer -= dt;
       // Stay at airfield — enforce position and correct facing angle every frame
       if (en.homeBase) {
-        const groundY = getTerrainY(en.homeBase.x + en.homeBase.width / 2);
+        // Spread planes across the airfield using their parkSlot
+        const slot = en.parkSlot || 0;
+        const slotX = en.homeBase.x + 20 + slot * 30;
+        const groundY = getTerrainY(slotX);
         en.y = groundY - 8;
-        en.x = en.homeBase.x + en.homeBase.width / 2;
+        en.x = slotX;
         en.vx = 0; en.vy = 0;
         const facesRight = en.homeBase.x < WORLD_W / 2;
         en.angle = facesRight ? 0 : Math.PI;
@@ -2377,6 +2387,14 @@ function updateEnemies(dt) {
       // Switch to returning when fuel low
       if (en.fuel < 150 && en.state === 'flying') {
         en.state = 'returning';
+      }
+
+      // Returning enemies re-engage if player gets close
+      if (en.state === 'returning' && en.fuel > 30) {
+        const reEngageDist = Math.sqrt((player.x - en.x) ** 2 + (player.y - en.y) ** 2);
+        if (reEngageDist < 400 && !player.landed && !player.invincible) {
+          en.state = 'flying';
+        }
       }
 
       if (en.state === 'returning' && en.homeBase) {
@@ -2408,6 +2426,12 @@ function updateEnemies(dt) {
           en.landed = true;
           en.vx = 0; en.vy = 0;
           en.y = groundY - 8;
+          // Assign parking slot — count how many are already parked at this base
+          let slotsUsed = 0;
+          for (const other of enemies) {
+            if (other !== en && other.alive && other.state === 'grounded' && other.homeBase === en.homeBase) slotsUsed++;
+          }
+          en.parkSlot = slotsUsed;
           // Reset angle so grounded plane faces correct direction
           const facesRight = en.homeBase.x < WORLD_W / 2;
           en.angle = facesRight ? 0 : Math.PI;
