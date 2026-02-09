@@ -1766,6 +1766,7 @@ function update(dt) {
         state = ST.GAME_OVER;
       } else {
         initPlayer();
+        player.hp = PLAYER_MAX_HP; // explicit HP reset guarantee
         player.invincible = 3; // 3 seconds of invincibility after respawn
         // Clear hostile projectiles near spawn
         bullets = bullets.filter(b => b.friendly);
@@ -2472,6 +2473,20 @@ function updateChaserEnemy(en, dt, playerSafe, turnRate, bulletSpeedMult) {
     if (en.stallTimer <= 0) { en.stalled = false; en.speed = ENEMY_SPECS[en.type].speed; }
   }
 
+  // ── Terrain avoidance: override target if ground is close ──
+  const groundHere = getTerrainY(en.x);
+  const lookAheadX = en.x + Math.cos(en.angle) * 80;
+  const groundAhead = getTerrainY(((lookAheadX % WORLD_W) + WORLD_W) % WORLD_W);
+  const terrainClearance = Math.min(groundHere - en.y, groundAhead - en.y);
+  if (terrainClearance < 60) {
+    // Pull up hard — override desired angle to climb
+    desiredAngle = -Math.PI / 2; // straight up
+    if (terrainClearance < 30) {
+      // Emergency: force upward immediately with boosted turn rate
+      en.angle += (desiredAngle - en.angle > 0 ? 1 : -1) * turnRate * 3 * dt;
+    }
+  }
+
   let angleDiff = desiredAngle - en.angle;
   while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
   while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
@@ -2512,7 +2527,16 @@ function updateChaserEnemy(en, dt, playerSafe, turnRate, bulletSpeedMult) {
 function updateBomberEnemy(en, dt, playerSafe) {
   // Flies toward player's base area at high altitude, drops bombs
   const targetX = playerSafe ? 6000 : baseX + BASE_WIDTH / 2;
-  const targetY = 80 + Math.sin(Date.now() * 0.001 + en.x * 0.01) * 40;
+  let targetY = 80 + Math.sin(Date.now() * 0.001 + en.x * 0.01) * 40;
+
+  // Terrain avoidance for bombers
+  const bGroundHere = getTerrainY(en.x);
+  const bLookAhead = en.x + Math.cos(en.angle) * 100;
+  const bGroundAhead = getTerrainY(((bLookAhead % WORLD_W) + WORLD_W) % WORLD_W);
+  const bClearance = Math.min(bGroundHere - en.y, bGroundAhead - en.y);
+  if (bClearance < 80) {
+    targetY = Math.min(targetY, en.y - 40); // force climb
+  }
 
   let dx = targetX - en.x;
   let dy = targetY - en.y;
