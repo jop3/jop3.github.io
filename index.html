@@ -516,7 +516,12 @@ function getTerrainY(x) {
 // ── Base territory protection: no cratering within this zone ──
 function isInBaseTerritory(x) {
   const margin = 80;
-  return x >= baseX - margin && x <= baseX + BASE_WIDTH + margin;
+  if (x >= baseX - margin && x <= baseX + BASE_WIDTH + margin) return true;
+  // Also protect enemy bases
+  for (const eb of enemyBases) {
+    if (x >= eb.x - margin && x <= eb.x + eb.width + margin) return true;
+  }
+  return false;
 }
 
 // ── Entities ──
@@ -663,35 +668,23 @@ function spawnEnemyBases() {
   enemyBases = [];
   const isSea = getLevelTheme(level) === 'sea';
 
-  if (isSea && islandPeaks.length > 0) {
-    // Sea levels: place airfields on islands (skip islands too close to carrier)
-    const validIslands = islandPeaks.filter(ip =>
-      Math.abs(ip.cx - baseX - BASE_WIDTH / 2) > 800 && ip.w >= 200
-    );
-    // Pick up to 3 islands for enemy bases
-    const shuffled = validIslands.sort(() => Math.random() - 0.5);
-    const baseIslands = shuffled.slice(0, Math.min(3, shuffled.length));
-    for (const island of baseIslands) {
-      const bx = Math.floor(island.cx - BASE_WIDTH / 2);
-      flattenTerrainForBase(bx);
-      enemyBases.push({ x: bx, width: BASE_WIDTH });
-    }
-    // Ensure at least 2 bases
-    if (enemyBases.length < 2) {
-      const fallbackPositions = [300, WORLD_W - 300 - BASE_WIDTH];
-      for (const bx of fallbackPositions) {
-        if (enemyBases.length >= 2) break;
-        flattenTerrainForBase(bx);
-        enemyBases.push({ x: bx, width: BASE_WIDTH });
+  // Always place enemy airfields at world edges — both land and sea levels
+  const positions = [300, WORLD_W - 300 - BASE_WIDTH];
+  for (const bx of positions) {
+    // On sea levels, ensure there's solid ground (create an island) at edge positions
+    if (isSea) {
+      const centerX = bx + BASE_WIDTH / 2;
+      const islandWidth = 300;
+      for (let dx = -islandWidth / 2; dx <= islandWidth / 2; dx++) {
+        const ix = Math.floor(((centerX + dx) % WORLD_W + WORLD_W) % WORLD_W);
+        if (ix >= 0 && ix < WORLD_W) {
+          const factor = Math.cos((dx / (islandWidth / 2)) * Math.PI * 0.5);
+          terrain[ix] = waterLineY - 60 * factor * factor;
+        }
       }
     }
-  } else {
-    // Land levels: airfields at edges
-    const positions = [300, WORLD_W - 300 - BASE_WIDTH];
-    for (const bx of positions) {
-      flattenTerrainForBase(bx);
-      enemyBases.push({ x: bx, width: BASE_WIDTH });
-    }
+    flattenTerrainForBase(bx);
+    enemyBases.push({ x: bx, width: BASE_WIDTH });
   }
 }
 
@@ -2037,9 +2030,25 @@ function updatePlayer(dt) {
       }
     }
 
-    // Clamp at world edges (barrier mountains prevent passage)
-    if (p.x < 10) { p.x = 10; p.vx = Math.abs(p.vx) * 0.3; }
-    if (p.x >= WORLD_W - 10) { p.x = WORLD_W - 10; p.vx = -Math.abs(p.vx) * 0.3; }
+    // Auto-turn at world edges — instant 180 flip
+    if (p.x < 10) {
+      p.x = 10;
+      // Flip to face right: mirror angleIdx horizontally
+      if (p.angleIdx > 4 && p.angleIdx < 12) {
+        p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
+      }
+      p.orient = false;
+      p.vx = Math.abs(p.vx);
+    }
+    if (p.x >= WORLD_W - 10) {
+      p.x = WORLD_W - 10;
+      // Flip to face left: mirror angleIdx horizontally
+      if (p.angleIdx < 4 || p.angleIdx > 12) {
+        p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
+      }
+      p.orient = true;
+      p.vx = -Math.abs(p.vx);
+    }
 
     // Ceiling — bounce off, lose speed but don't kill it entirely
     if (p.y < -50) {
@@ -2549,11 +2558,12 @@ function updateEnemies(dt) {
         en.state = 'flying';
         en.landed = false;
         en.fuel = ENEMY_MAX_FUEL;
-        // Launch direction: toward player base
-        const towardPlayer = en.x < baseX ? 0 : Math.PI;
+        // Launch upward and toward player base — must clear terrain crash zone
+        const towardPlayer = en.x < baseX ? -0.3 : (Math.PI + 0.3);
         en.angle = towardPlayer;
+        en.y -= 40; // launch well above ground to clear crash threshold
         en.vx = Math.cos(en.angle) * en.speed;
-        en.vy = -40; // slight upward
+        en.vy = -60; // strong upward launch
       }
       // Grounded enemies can still be hit — fall through to collision checks
     }
@@ -3900,25 +3910,95 @@ function drawCarrier() {
     ctx.stroke();
   }
 
-  // ── Island/superstructure (tall rectangle on right side) ──
+  // ── Control tower / island superstructure (right side) ──
   const islandX = carrierRight - 30;
   ctx.strokeStyle = 'rgba(0, 170, 255, 0.5)';
   ctx.lineWidth = 1;
-  ctx.strokeRect(islandX, deckY - 30, 18, 30);
-  // Bridge windows
-  ctx.fillStyle = 'rgba(0, 255, 255, 0.3)';
-  ctx.fillRect(islandX + 3, deckY - 26, 4, 3);
-  ctx.fillRect(islandX + 10, deckY - 26, 4, 3);
+  // Main tower body
+  ctx.strokeRect(islandX, deckY - 35, 20, 35);
+  // Bridge windows (top row)
+  ctx.fillStyle = 'rgba(0, 255, 255, 0.4)';
+  ctx.fillRect(islandX + 3, deckY - 32, 4, 3);
+  ctx.fillRect(islandX + 9, deckY - 32, 4, 3);
+  // Lower windows
+  ctx.fillStyle = 'rgba(0, 255, 255, 0.2)';
+  ctx.fillRect(islandX + 3, deckY - 22, 4, 3);
+  ctx.fillRect(islandX + 9, deckY - 22, 4, 3);
   // Mast/antenna
+  ctx.strokeStyle = 'rgba(0, 170, 255, 0.6)';
   ctx.beginPath();
-  ctx.moveTo(islandX + 9, deckY - 30);
-  ctx.lineTo(islandX + 9, deckY - 42);
+  ctx.moveTo(islandX + 10, deckY - 35);
+  ctx.lineTo(islandX + 10, deckY - 52);
   ctx.stroke();
-  // Radar dish
+  // Radar dish (rotating)
   const dishAng = (Date.now() * 0.003) % (Math.PI * 2);
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.arc(islandX + 9, deckY - 42, 5, dishAng, dishAng + Math.PI * 0.5);
+  ctx.arc(islandX + 10, deckY - 52, 6, dishAng, dishAng + Math.PI * 0.5);
   ctx.stroke();
+  // Blinking light on top
+  const blink = Math.sin(Date.now() * 0.005) > 0;
+  if (blink) {
+    ctx.fillStyle = '#f00';
+    ctx.beginPath();
+    ctx.arc(islandX + 10, deckY - 53, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ── Machine gun turrets (fore and aft) ──
+  ctx.strokeStyle = 'rgba(0, 170, 255, 0.6)';
+  ctx.lineWidth = 1;
+  // Forward gun (left/bow)
+  const gunY = deckY - 5;
+  const fGunX = carrierLeft + 10;
+  // Gun base (small circle)
+  ctx.beginPath();
+  ctx.arc(fGunX, gunY, 3, 0, Math.PI * 2);
+  ctx.stroke();
+  // Gun barrel (sweeps slowly)
+  const fGunAng = -Math.PI / 2 + Math.sin(Date.now() * 0.001) * 0.6;
+  ctx.beginPath();
+  ctx.moveTo(fGunX, gunY);
+  ctx.lineTo(fGunX + Math.cos(fGunAng) * 8, gunY + Math.sin(fGunAng) * 8);
+  ctx.stroke();
+  // Aft gun (right/stern)
+  const aGunX = carrierRight - 40;
+  ctx.beginPath();
+  ctx.arc(aGunX, gunY, 3, 0, Math.PI * 2);
+  ctx.stroke();
+  const aGunAng = -Math.PI / 2 + Math.sin(Date.now() * 0.0012 + 2) * 0.6;
+  ctx.beginPath();
+  ctx.moveTo(aGunX, gunY);
+  ctx.lineTo(aGunX + Math.cos(aGunAng) * 8, gunY + Math.sin(aGunAng) * 8);
+  ctx.stroke();
+
+  // ── Windsock on control tower ──
+  const wsX = islandX + 18;
+  const wsY = deckY - 38;
+  ctx.strokeStyle = 'rgba(255, 100, 0, 0.5)';
+  ctx.lineWidth = 1;
+  // Pole
+  ctx.beginPath();
+  ctx.moveTo(wsX, deckY);
+  ctx.lineTo(wsX, wsY);
+  ctx.stroke();
+  // Sock (flutters in wind)
+  const wsFlutter = Math.sin(Date.now() * 0.008) * 2;
+  ctx.strokeStyle = 'rgba(255, 120, 0, 0.6)';
+  ctx.beginPath();
+  ctx.moveTo(wsX, wsY);
+  ctx.quadraticCurveTo(wsX + 6, wsY + wsFlutter, wsX + 12, wsY + 1 + wsFlutter);
+  ctx.stroke();
+
+  // ── Fuel lines on deck ──
+  ctx.strokeStyle = 'rgba(0, 200, 100, 0.2)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 5]);
+  ctx.beginPath();
+  ctx.moveTo(islandX, deckY - 2);
+  ctx.lineTo(baseX + BASE_WIDTH / 2, deckY - 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
 
   // ── Wake: animated white particles trailing behind carrier ──
   if (Math.random() < 0.3) {
