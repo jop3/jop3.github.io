@@ -445,8 +445,8 @@ function generateSeaTerrain(groundBase) {
     terrain[x] = waterLineY;
   }
 
-  // Generate 3-5 islands as terrain peaks rising above water
-  const numIslands = 3 + Math.floor(Math.random() * 3);
+  // Generate 5-8 islands as terrain peaks rising above water
+  const numIslands = 5 + Math.floor(Math.random() * 4);
   const islandSpacing = WORLD_W / (numIslands + 2);
   for (let i = 0; i < numIslands; i++) {
     // Spread islands across the world, avoiding center (carrier area)
@@ -660,26 +660,53 @@ let enemyBases = []; // { x, width } — enemy landing fields
 
 function spawnEnemyBases() {
   enemyBases = [];
-  // Left airfield near left edge (past barrier mountains)
-  const leftBaseX = 300;
-  const rightBaseX = WORLD_W - 300 - BASE_WIDTH;
+  const isSea = getLevelTheme(level) === 'sea';
 
-  // Flatten terrain at enemy bases
-  for (const bx of [leftBaseX, rightBaseX]) {
-    const flatY = getTerrainY(bx + BASE_WIDTH / 2);
-    for (let x = bx - 80; x < bx + BASE_WIDTH + 80; x++) {
-      if (x >= 0 && x < WORLD_W) {
-        if (x >= bx && x <= bx + BASE_WIDTH) terrain[x] = flatY;
-        else if (x < bx) {
-          const t = (bx - x) / 80;
-          terrain[x] = flatY * (1 - t) + terrain[x] * t;
-        } else {
-          const t = (x - bx - BASE_WIDTH) / 80;
-          terrain[x] = flatY * (1 - t) + terrain[x] * t;
-        }
+  if (isSea && islandPeaks.length > 0) {
+    // Sea levels: place airfields on islands (skip islands too close to carrier)
+    const validIslands = islandPeaks.filter(ip =>
+      Math.abs(ip.cx - baseX - BASE_WIDTH / 2) > 800 && ip.w >= 200
+    );
+    // Pick up to 3 islands for enemy bases
+    const shuffled = validIslands.sort(() => Math.random() - 0.5);
+    const baseIslands = shuffled.slice(0, Math.min(3, shuffled.length));
+    for (const island of baseIslands) {
+      const bx = Math.floor(island.cx - BASE_WIDTH / 2);
+      flattenTerrainForBase(bx);
+      enemyBases.push({ x: bx, width: BASE_WIDTH });
+    }
+    // Ensure at least 2 bases
+    if (enemyBases.length < 2) {
+      const fallbackPositions = [300, WORLD_W - 300 - BASE_WIDTH];
+      for (const bx of fallbackPositions) {
+        if (enemyBases.length >= 2) break;
+        flattenTerrainForBase(bx);
+        enemyBases.push({ x: bx, width: BASE_WIDTH });
       }
     }
-    enemyBases.push({ x: bx, width: BASE_WIDTH });
+  } else {
+    // Land levels: airfields at edges
+    const positions = [300, WORLD_W - 300 - BASE_WIDTH];
+    for (const bx of positions) {
+      flattenTerrainForBase(bx);
+      enemyBases.push({ x: bx, width: BASE_WIDTH });
+    }
+  }
+}
+
+function flattenTerrainForBase(bx) {
+  const flatY = getTerrainY(bx + BASE_WIDTH / 2);
+  for (let x = bx - 80; x < bx + BASE_WIDTH + 80; x++) {
+    if (x >= 0 && x < WORLD_W) {
+      if (x >= bx && x <= bx + BASE_WIDTH) terrain[x] = flatY;
+      else if (x < bx) {
+        const t = (bx - x) / 80;
+        terrain[x] = flatY * (1 - t) + terrain[x] * t;
+      } else {
+        const t = (x - bx - BASE_WIDTH) / 80;
+        terrain[x] = flatY * (1 - t) + terrain[x] * t;
+      }
+    }
   }
 }
 
@@ -714,15 +741,15 @@ function drawEnemyBases() {
 function spawnEnemies() {
   enemies = [];
   spawnEnemyBases();
-  const count = 1 + level;
+  const count = 3 + level + Math.floor(Math.random() * 2); // minimum 4 on level 1
   let zeppelinCount = 0;
   for (let i = 0; i < count; i++) {
-    // Type selection by level
+    // Randomized type selection — all types can appear from level 1
     let type = 'biplane';
     const r = Math.random();
-    if (level >= 5 && r < 0.10 && zeppelinCount < 1) { type = 'zeppelin'; zeppelinCount++; }
-    else if (level >= 3 && r < 0.25) type = 'bomber';
-    else if (level >= 2 && r < 0.50) type = 'jet';
+    if (r < 0.06 && zeppelinCount < 1) { type = 'zeppelin'; zeppelinCount++; }
+    else if (r < 0.20) type = 'bomber';
+    else if (r < 0.45) type = 'jet';
 
     const spec = ENEMY_SPECS[type];
     // Assign to an enemy base — alternate between left and right
@@ -1918,8 +1945,9 @@ function damagePlayer(amount) {
 function killPlayer() {
   addExplosion(player.x, player.y, 40, true);
   playBoom(true);
-  // Crater in terrain (skip if inside home base territory)
-  if (!isInBaseTerritory(player.x)) {
+  // Crater in terrain (skip if inside home base territory or water)
+  const crashIsWater = waterLineY > 0 && getTerrainY(player.x) >= waterLineY - 5;
+  if (!isInBaseTerritory(player.x) && !crashIsWater) {
     for (let dx = -30; dx <= 30; dx++) {
       const ix = Math.floor(((player.x + dx) % WORLD_W + WORLD_W) % WORLD_W);
       if (ix >= 0 && ix < WORLD_W) {
@@ -1998,8 +2026,9 @@ function updateBullets(dt) {
             addExplosion(bld.x + bld.w / 2, bld.y + bld.h / 2, 25, true);
             playBoom(true);
             score += buildingScores[bld.type] || 100;
-            // Terrain crater (skip in base territory)
-            if (!isInBaseTerritory(bld.x + bld.w / 2)) {
+            // Terrain crater (skip in base territory and water)
+            const bldIsWater = waterLineY > 0 && getTerrainY(bld.x + bld.w / 2) >= waterLineY - 5;
+            if (!isInBaseTerritory(bld.x + bld.w / 2) && !bldIsWater) {
               for (let dx = -20; dx <= 20; dx++) {
                 const ix = Math.floor(((bld.x + bld.w / 2 + dx) % WORLD_W + WORLD_W) % WORLD_W);
                 if (ix >= 0 && ix < WORLD_W) terrain[ix] += (20 - Math.abs(dx)) * 0.3;
@@ -2060,11 +2089,11 @@ function updateBullets(dt) {
       }
     }
 
-    // Friendly bullets hit submarines (only when surfaced)
+    // Friendly bullets hit submarines (when not fully submerged)
     if (b.friendly) {
       for (const sub of submarines) {
-        if (!sub.alive || !sub.surfaced) continue;
-        if (Math.abs(b.x - sub.x) < 22 && Math.abs(b.y - sub.y) < 10) {
+        if (!sub.alive || sub.phase === 'submerged') continue;
+        if (Math.abs(b.x - sub.x) < 55 && Math.abs(b.y - sub.y) < 18) {
           sub.hp--;
           if (sub.hp <= 0) {
             sub.alive = false;
@@ -2125,17 +2154,18 @@ function updateBombs(dt) {
       }
     }
 
-    // Player bombs hit surfaced submarines
+    // Player bombs hit submarines (hittable when not fully submerged)
     if (b.friendly !== false) {
       for (const sub of submarines) {
-        if (!sub.alive || !sub.surfaced) continue;
-        if (Math.abs(b.x - sub.x) < 25 && Math.abs(b.y - sub.y) < 12) {
-          sub.hp -= 2;
+        if (!sub.alive || sub.phase === 'submerged') continue;
+        if (Math.abs(b.x - sub.x) < 55 && Math.abs(b.y - sub.y) < 18) {
+          sub.hp--;
+          addExplosion(b.x, b.y, 15, false);
           if (sub.hp <= 0) {
             sub.alive = false;
-            addExplosion(sub.x, sub.y, 30, true);
+            addExplosion(sub.x, sub.y, 40, true);
             playBoom(true);
-            score += 400;
+            score += 800;
           }
           hit = true;
           break;
@@ -2158,17 +2188,28 @@ function updateBombs(dt) {
     }
 
     if (hit || b.life <= 0) {
-      addExplosion(b.x, b.y, 30, true);
-      playBoom(true);
-      // Crater (skip in base territory)
-      if (!isInBaseTerritory(b.x)) {
-        for (let dx = -40; dx <= 40; dx++) {
-          const ix = Math.floor(((b.x + dx) % WORLD_W + WORLD_W) % WORLD_W);
-          if (ix >= 0 && ix < WORLD_W) {
-            terrain[ix] += (40 - Math.abs(dx)) * 0.4;
+      const isWater = waterLineY > 0 && getTerrainY(b.x) >= waterLineY - 5;
+      if (isWater) {
+        // Water splash — no crater, water particles instead
+        for (let s = 0; s < 8; s++) {
+          addParticle(b.x + (Math.random() - 0.5) * 10, b.y,
+            (Math.random() - 0.5) * 60, -40 - Math.random() * 60, 0.5,
+            '#4af', 2 + Math.random());
+        }
+        addExplosion(b.x, b.y, 10, false);
+      } else {
+        addExplosion(b.x, b.y, 30, true);
+        // Crater (skip in base territory)
+        if (!isInBaseTerritory(b.x)) {
+          for (let dx = -40; dx <= 40; dx++) {
+            const ix = Math.floor(((b.x + dx) % WORLD_W + WORLD_W) % WORLD_W);
+            if (ix >= 0 && ix < WORLD_W) {
+              terrain[ix] += (40 - Math.abs(dx)) * 0.4;
+            }
           }
         }
       }
+      playBoom(true);
       bombs.splice(i, 1);
     }
   }
@@ -2365,6 +2406,9 @@ function updateEnemies(dt) {
           en.landed = true;
           en.vx = 0; en.vy = 0;
           en.y = groundY - 8;
+          // Reset angle so grounded plane faces correct direction
+          const facesRight = en.homeBase.x < WORLD_W / 2;
+          en.angle = facesRight ? 0 : Math.PI;
           en.fuel = ENEMY_MAX_FUEL;
           en.takeoffTimer = 3 + Math.random() * 4;
           continue;
@@ -3594,13 +3638,14 @@ function spawnSubmarines() {
 
     submarines.push({
       x: sx,
-      y: waterLineY - 2,
-      vx: (Math.random() < 0.5 ? 1 : -1) * (20 + Math.random() * 15),
+      y: waterLineY - 4,
+      vx: (Math.random() < 0.5 ? 1 : -1) * (15 + Math.random() * 10),
       alive: true,
-      hp: 2,
+      hp: 6,
       surfaced: true,
-      surfaceTimer: 3 + Math.random() * 4,
-      torpedoTimer: 60 + Math.random() * 60,
+      surfaceTimer: 5 + Math.random() * 5,
+      gunTimer: 0,
+      submergeDepth: 0, // 0 = surfaced, 1 = fully submerged
       phase: 'surfaced' // surfaced, submerging, submerged, surfacing
     });
   }
@@ -3612,50 +3657,71 @@ function updateSubmarines(dt) {
 
     // Movement
     sub.x += sub.vx * dt;
-    if (sub.x < 200) sub.vx = Math.abs(sub.vx);
-    if (sub.x > WORLD_W - 200) sub.vx = -Math.abs(sub.vx);
-
-    // Clamp at edges
     if (sub.x < 200) { sub.x = 200; sub.vx = Math.abs(sub.vx); }
     if (sub.x >= WORLD_W - 200) { sub.x = WORLD_W - 200; sub.vx = -Math.abs(sub.vx); }
 
-    // Keep at water surface
-    sub.y = waterLineY - 2;
-
-    // Surface/submerge cycle
+    // Surface/submerge cycle with smooth animation
     sub.surfaceTimer -= dt;
     if (sub.surfaceTimer <= 0) {
-      if (sub.surfaced) {
+      if (sub.phase === 'surfaced') {
+        sub.phase = 'submerging';
+        sub.surfaceTimer = 2; // time to submerge
+      } else if (sub.phase === 'submerging') {
+        sub.phase = 'submerged';
         sub.surfaced = false;
-        sub.surfaceTimer = 4 + Math.random() * 4;
-      } else {
+        sub.surfaceTimer = 4 + Math.random() * 5; // time underwater
+      } else if (sub.phase === 'submerged') {
+        sub.phase = 'surfacing';
+        sub.surfaceTimer = 2; // time to surface
+      } else if (sub.phase === 'surfacing') {
+        sub.phase = 'surfaced';
         sub.surfaced = true;
-        sub.surfaceTimer = 3 + Math.random() * 4;
+        sub.surfaceTimer = 5 + Math.random() * 5; // time on surface
       }
     }
 
-    // Fire torpedoes when surfaced
-    sub.torpedoTimer--;
-    if (sub.torpedoTimer <= 0 && sub.surfaced) {
-      // Fire toward player or carrier
-      const targetX = Math.abs(sub.x - player.x) < 600 ? player.x : baseX + BASE_WIDTH / 2;
-      const dir = targetX > sub.x ? 1 : -1;
-      bombs.push({
-        x: sub.x + dir * 20,
-        y: waterLineY - 3,
-        vx: dir * 100,
-        vy: 0,
-        life: 8,
-        friendly: false,
-        isTorpedo: true
-      });
-      sub.torpedoTimer = 80 + Math.random() * 60;
+    // Smooth submerge depth
+    if (sub.phase === 'submerging') {
+      sub.submergeDepth = Math.min(1, sub.submergeDepth + dt * 0.5);
+    } else if (sub.phase === 'surfacing') {
+      sub.submergeDepth = Math.max(0, sub.submergeDepth - dt * 0.5);
+    } else if (sub.phase === 'submerged') {
+      sub.submergeDepth = 1;
+    } else {
+      sub.submergeDepth = 0;
+    }
+
+    // Position: sink below water when submerging
+    sub.y = waterLineY - 4 + sub.submergeDepth * 30;
+
+    // Machine gun tower — fire bullets when surfaced or surfacing
+    if (sub.surfaced || sub.phase === 'surfacing') {
+      sub.gunTimer -= dt;
+      if (sub.gunTimer <= 0) {
+        const dx = player.x - sub.x;
+        const dy = player.y - sub.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 700 && player.y < sub.y) {
+          // Fire toward player with spread
+          const aimAngle = Math.atan2(dy, dx) + (Math.random() - 0.5) * 0.3;
+          bullets.push({
+            x: sub.x, y: sub.y - 18 - (1 - sub.submergeDepth) * 10,
+            vx: Math.cos(aimAngle) * 300,
+            vy: Math.sin(aimAngle) * 300,
+            life: 2, friendly: false
+          });
+          sub.gunTimer = 0.4 + Math.random() * 0.3;
+        } else {
+          sub.gunTimer = 0.5;
+        }
+      }
     }
   }
 }
 
 function drawSubmarine(sub) {
-  const alpha = sub.surfaced ? 1.0 : 0.3;
+  const depth = sub.submergeDepth || 0;
+  const alpha = 1.0 - depth * 0.7;
   ctx.globalAlpha = alpha;
 
   neonGlow(ctx, '#48f', 6);
@@ -3664,32 +3730,72 @@ function drawSubmarine(sub) {
 
   const sx = sub.x;
   const sy = sub.y;
+  const dir = sub.vx >= 0 ? 1 : -1;
 
-  if (sub.surfaced) {
-    // Hull (elongated oval)
+  // Hull (large elongated oval)
+  ctx.beginPath();
+  ctx.ellipse(sx, sy + 5, 50, 12, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Deck line
+  ctx.beginPath();
+  ctx.moveTo(sx - 45, sy);
+  ctx.lineTo(sx + 45, sy);
+  ctx.stroke();
+
+  // Bow and stern detail
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(sx + dir * 48, sy);
+  ctx.lineTo(sx + dir * 55, sy + 3);
+  ctx.stroke();
+
+  // Conning tower (larger)
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(sx - 8, sy - 16, 16, 16);
+
+  // Periscope
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(sx + 4, sy - 16);
+  ctx.lineTo(sx + 4, sy - 24);
+  ctx.lineTo(sx + 8, sy - 24);
+  ctx.stroke();
+
+  // Machine gun turret on conning tower
+  if (depth < 0.5) {
+    ctx.lineWidth = 1.5;
+    // Turret base (circle)
     ctx.beginPath();
-    ctx.ellipse(sx, sy + 3, 22, 6, 0, 0, Math.PI * 2);
+    ctx.arc(sx - 2, sy - 16, 4, 0, Math.PI * 2);
     ctx.stroke();
-    // Conning tower
-    ctx.strokeRect(sx - 5, sy - 8, 10, 11);
-    // Periscope
+    // Gun barrel pointing toward player
+    const dx = player.x - sx;
+    const dy = player.y - (sy - 16);
+    const gunAngle = Math.atan2(dy, dx);
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(sx, sy - 8);
-    ctx.lineTo(sx, sy - 16);
-    ctx.lineTo(sx + 4, sy - 16);
+    ctx.moveTo(sx - 2, sy - 16);
+    ctx.lineTo(sx - 2 + Math.cos(gunAngle) * 12, sy - 16 + Math.sin(gunAngle) * 12);
     ctx.stroke();
-  } else {
-    // Just periscope visible
-    ctx.beginPath();
-    ctx.moveTo(sx, sy);
-    ctx.lineTo(sx, sy - 12);
-    ctx.lineTo(sx + 4, sy - 12);
-    ctx.stroke();
-    // Faint hull outline below water
-    ctx.globalAlpha = 0.15;
-    ctx.beginPath();
-    ctx.ellipse(sx, sy + 3, 22, 6, 0, 0, Math.PI * 2);
-    ctx.stroke();
+  }
+
+  // Propeller wake
+  if (depth < 0.8) {
+    ctx.strokeStyle = 'rgba(100, 200, 255, 0.3)';
+    ctx.lineWidth = 1;
+    const wakeX = sx - dir * 50;
+    for (let w = 0; w < 3; w++) {
+      ctx.beginPath();
+      ctx.arc(wakeX - dir * w * 8, sy + 5, 3 + w * 2, 0, Math.PI);
+      ctx.stroke();
+    }
+  }
+
+  // HP indicator (pips below hull)
+  ctx.fillStyle = '#48f';
+  for (let h = 0; h < sub.hp; h++) {
+    ctx.fillRect(sx - 15 + h * 6, sy + 20, 4, 2);
   }
 
   clearGlow(ctx);
