@@ -2426,7 +2426,14 @@ function updateChaserEnemy(en, dt, playerSafe, turnRate, bulletSpeedMult) {
   en.y += en.vy * dt;
 
   const groundY = getTerrainY(en.x);
-  if (en.y > groundY - 40) en.y = groundY - 40;
+  if (en.y > groundY - 12) {
+    // Crash into terrain — enemy dies
+    en.alive = false;
+    addExplosion(en.x, en.y, 25, false);
+    score += ENEMY_SPECS[en.type].score;
+    launchNextFromBases();
+    return 9999;
+  }
   if (en.y < 30) en.y = 30;
 
   // Fire at player — with accuracy spread
@@ -2465,7 +2472,13 @@ function updateBomberEnemy(en, dt, playerSafe) {
   en.y += en.vy * dt;
 
   const groundY = getTerrainY(en.x);
-  if (en.y > groundY - 60) en.y = groundY - 60;
+  if (en.y > groundY - 12) {
+    en.alive = false;
+    addExplosion(en.x, en.y, 25, false);
+    score += ENEMY_SPECS[en.type].score;
+    launchNextFromBases();
+    return 9999;
+  }
   if (en.y < 50) en.y = 50;
 
   // Drop bombs when above base area or near player
@@ -2583,14 +2596,27 @@ function updateEnemies(dt) {
         en.x += en.vx * dt;
         en.y += en.vy * dt;
 
-        // Terrain clamping — don't fly underground
+        // Terrain clamping — allow descent near base for landing
         const retGroundY = getTerrainY(en.x);
-        if (en.y > retGroundY - 40) en.y = retGroundY - 40;
+        const nearBaseForClamp = en.homeBase && Math.abs(en.x - (en.homeBase.x + en.homeBase.width / 2)) < 80;
+        if (nearBaseForClamp) {
+          // Near home base — allow descent to landing altitude
+          if (en.y > retGroundY - 10) en.y = retGroundY - 10;
+        } else {
+          // Away from base — crash if touching terrain
+          if (en.y > retGroundY - 12) {
+            en.alive = false;
+            addExplosion(en.x, en.y, 25, false);
+            score += ENEMY_SPECS[en.type].score;
+            launchNextFromBases();
+            continue;
+          }
+        }
 
         // Landing check
         const nearBase = Math.abs(en.x - homeX) < 40;
         const groundY = getTerrainY(en.x);
-        if (nearBase && en.y >= groundY - 15) {
+        if (nearBase && en.y >= groundY - 12) {
           // Landed — return to hangar and launch next plane
           en.state = 'hangar';
           en.landed = true;
@@ -3366,10 +3392,10 @@ function draw() {
   // Version tag — bottom left
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = 'rgba(0, 255, 255, 0.2)';
-  ctx.font = '9px "Courier New", monospace';
+  ctx.fillStyle = 'rgba(0, 255, 255, 0.5)';
+  ctx.font = '12px "Courier New", monospace';
   ctx.textAlign = 'left';
-  ctx.fillText('v' + GAME_VERSION, 6, canvas.height - 6);
+  ctx.fillText('v' + GAME_VERSION, 8, canvas.height - 8);
   ctx.restore();
 }
 
