@@ -2081,24 +2081,19 @@ function updatePlayer(dt) {
       }
     }
 
-    // Auto-turn at world edges — instant 180 flip
+    // Auto-turn at world edges — instant horizontal mirror
+    // angleIdx: 0=right, 4=up, 8=left, 12=down
+    // Horizontal mirror formula: (8 - idx + 16) % 16
+    //   0(right)→8(left), 1→7, 4(up)→4(up), 8(left)→0(right), 12(down)→12(down)
     if (p.x < 10) {
       p.x = 10;
-      // Flip to face right: mirror angleIdx horizontally
-      if (p.angleIdx > 4 && p.angleIdx < 12) {
-        p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
-      }
-      p.orient = false;
-      p.vx = Math.abs(p.vx);
+      p.angleIdx = (8 - p.angleIdx + NUM_ANGLES) % NUM_ANGLES;
+      p.vx = Math.abs(p.vx) || 1;
     }
     if (p.x >= WORLD_W - 10) {
       p.x = WORLD_W - 10;
-      // Flip to face left: mirror angleIdx horizontally
-      if (p.angleIdx < 4 || p.angleIdx > 12) {
-        p.angleIdx = (NUM_ANGLES - p.angleIdx) % NUM_ANGLES;
-      }
-      p.orient = true;
-      p.vx = -Math.abs(p.vx);
+      p.angleIdx = (8 - p.angleIdx + NUM_ANGLES) % NUM_ANGLES;
+      p.vx = -(Math.abs(p.vx) || 1);
     }
 
     // Ceiling — bounce off, lose speed but don't kill it entirely
