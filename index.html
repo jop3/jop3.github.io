@@ -87,7 +87,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0f;font-family:
 // ═══════════════════════════════════════════════════════════════
 (() => {
 'use strict';
-const GAME_VERSION = '0.8.0';
+const GAME_VERSION = '5e0c775'; // git short hash — updated each commit
 
 // ── Canvas setup ──
 const canvas = document.getElementById('c');
@@ -1600,6 +1600,22 @@ function update(dt) {
     updateFleeingPeople(dt);
     updateDragons(dt);
     updateSubmarines(dt);
+    // Player crashes into buildings — both destroyed
+    if (!player.landed && !player.burning && player.invincible <= 0) {
+      for (const bld of buildings) {
+        if (!bld.alive) continue;
+        if (player.x > bld.x - 10 && player.x < bld.x + bld.w + 10 &&
+            player.y > bld.y - 5 && player.y < bld.y + bld.h + 5) {
+          bld.alive = false;
+          addExplosion(bld.x + bld.w / 2, bld.y + bld.h / 2, 35, true);
+          playBoom(true);
+          score += buildingScores[bld.type] || 100;
+          onBuildingDestroyed(bld);
+          damagePlayer(3); // devastating crash
+          break;
+        }
+      }
+    }
     updateParachutes(dt);
     updateParticles(dt);
     updateCamera();
