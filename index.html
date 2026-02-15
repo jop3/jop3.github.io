@@ -1859,6 +1859,7 @@ function updatePlayer(dt) {
         p.vx = 0; p.vy = 0;
         p.x = homeX; p.y = homeY;
         p.fuel = MAX_FUEL; p.ammo = MAX_AMMO; p.bombCount = MAX_BOMBS;
+        p.hp = PLAYER_MAX_HP; // Repair on landing
       }
       return; // Skip normal physics — beam handles everything
     }
