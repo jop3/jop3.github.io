@@ -132,26 +132,46 @@ const ENEMY_SPECS = {
   biplane: { hp: 2, speed: 200, fireInterval: ENEMY_FIRE_INTERVAL, score: 300, color: '#f0a', hitW: 20, hitH: 12 },
   jet:     { hp: 2, speed: JET_SPEED, fireInterval: JET_FIRE_INTERVAL, score: 500, color: '#f55', hitW: 20, hitH: 12 },
   bomber:  { hp: 5, speed: BOMBER_SPEED, fireInterval: BOMBER_BOMB_INTERVAL, score: 700, color: '#fa0', hitW: 30, hitH: 15 },
-  zeppelin:{ hp: 8, speed: ZEPPELIN_SPEED, fireInterval: ZEPPELIN_BOMB_INTERVAL, score: 1500, color: '#aaf', hitW: 50, hitH: 20 }
+  zeppelin:{ hp: 8, speed: ZEPPELIN_SPEED, fireInterval: ZEPPELIN_BOMB_INTERVAL, score: 1500, color: '#aaf', hitW: 50, hitH: 20 },
+  ace:     { hp: 3, speed: 280, fireInterval: 30, score: 800, color: '#f0f', hitW: 20, hitH: 12 }
 };
 
 // ── Building score/spec lookup ──
-const buildingScores = { flak: 200, factory: 300, hangar: 100, dam: 500, radar_station: 250, fuel_depot: 200, bunker: 150 };
-const buildingColors = { flak: '#f80', factory: '#f44', hangar: '#fa0', dam: '#48f', radar_station: '#af0', fuel_depot: '#f80', bunker: '#888' };
+const buildingScores = { flak: 200, factory: 300, hangar: 100, dam: 500, radar_station: 250, fuel_depot: 200, bunker: 150, heavyBunker: 400, observation_tower: 300 };
+const buildingColors = { flak: '#f80', factory: '#f44', hangar: '#fa0', dam: '#48f', radar_station: '#af0', fuel_depot: '#f80', bunker: '#888', heavyBunker: '#a86', observation_tower: '#af0' };
 
 // ── Enemy accuracy debuff (from radar station destruction) ──
 let enemyAccuracyDebuff = 0;
 
 // ── Level theme system ──
-function getLevelTheme(lvl) {
-  return (lvl % 2 === 0) ? 'sea' : 'land';
-}
+const THEME_ORDER = ['land', 'sea', 'cloud', 'cave', 'normandy', 'forest'];
+const THEME_CONFIG = {
+  land:     { bg: '#0d1a0d', terrainColor: '#0fa', glow: '#0f8', hasWater: false, hasCeiling: false, hasCanopy: false },
+  sea:      { bg: '#0a1a2a', terrainColor: '#0af', glow: '#0af', hasWater: true,  hasCeiling: false, hasCanopy: false },
+  cloud:    { bg: '#1a2a3a', terrainColor: '#aaf', glow: '#88f', hasWater: false, hasCeiling: false, hasCanopy: false },
+  cave:     { bg: '#1a0d00', terrainColor: '#f80', glow: '#fa0', hasWater: false, hasCeiling: true,  hasCanopy: false },
+  normandy: { bg: '#1a1a0d', terrainColor: '#aa8', glow: '#cc9', hasWater: 'partial', hasCeiling: false, hasCanopy: false },
+  forest:   { bg: '#0d1f0d', terrainColor: '#0a0', glow: '#0f0', hasWater: false, hasCeiling: false, hasCanopy: true }
+};
+function getLevelTheme(lvl) { return THEME_ORDER[(lvl - 1) % 6]; }
+function getThemeConfig(lvl) { return THEME_CONFIG[getLevelTheme(lvl || level)]; }
 
 // ── Submarine data ──
 let submarines = [];
 
 // ── Speedboat data ──
 let speedboats = [];
+
+// ── New theme data ──
+let ceilingTerrain = null; // Float32Array for cave ceiling
+let canopyHeight = null;   // Float32Array for forest tree canopy
+let fuelTankers = [];
+let bats = [];
+let caveTurrets = [];
+let tanks = [];
+let barrageBalloons = [];
+let aaGuns = [];
+let trains = [];
 
 // ── Sopwith-style flight model ──
 // 16 discrete angles (like original), speed scalar, gravity table
@@ -186,6 +206,40 @@ let levelTimer = 0;
 let extraLifeMsg = 0;  // timer for "+1 LIFE" message
 let lastChanceMsg = 0; // timer for "LAST CHANCE" message
 let titlePlaneX = -200;
+
+// ── Medal & stats system ──
+const MEDALS = {
+  purple_heart:  { name: 'PURPLE HEART',  desc: 'Survived a wound',         icon: '💜', color: '#c0f' },
+  ace:           { name: 'ACE',            desc: '5 kills in one flight',    icon: '★',  color: '#ff0' },
+  top_ace:       { name: 'TOP ACE',        desc: '15 kills in one flight',   icon: '★★', color: '#fa0' },
+  valour:        { name: 'VALOUR CROSS',   desc: 'Score 500+ valour pts',    icon: '†',  color: '#f55' },
+  perfect:       { name: 'PERFECT FLIGHT', desc: 'Complete level undamaged', icon: '◆',  color: '#0ff' },
+  deep_strike:   { name: 'DEEP STRIKE',    desc: 'Destroy target 4000+ from base', icon: '▸', color: '#0f0' }
+};
+let flightStats = { kills: 0, damageTaken: 0, valour: 0 };
+let earnedMedals = new Set(); // medals earned this game
+let allTimeMedals = new Set(); // persisted across games (in memory)
+let medalPopup = null; // { medal, timer }
+
+function awardMedal(key) {
+  if (earnedMedals.has(key)) return;
+  earnedMedals.add(key);
+  allTimeMedals.add(key);
+  medalPopup = { medal: key, timer: 3 };
+}
+
+function addValourScore(baseScore, targetX) {
+  const dist = Math.abs(targetX - baseX - BASE_WIDTH / 2);
+  if (dist > 500) {
+    const valourPts = Math.floor((dist - 500) / 350 * (player.fuel / MAX_FUEL) * 100);
+    const wounded = player.wounded ? 3 : 1;
+    const total = valourPts * wounded;
+    flightStats.valour += total;
+    score += total;
+    if (dist > 4000) awardMedal('deep_strike');
+  }
+  flightStats.kills++;
+}
 
 // ── Input ──
 const keys = {};
@@ -402,14 +456,18 @@ let islandPeaks = [];
 
 function generateTerrain() {
   terrain = new Float32Array(WORLD_W);
+  ceilingTerrain = null;
+  canopyHeight = null;
   const groundBase = canvas.height * 0.75;
   baseX = Math.floor(WORLD_W / 2 - BASE_WIDTH / 2);
+  const theme = getLevelTheme(level);
 
-  if (getLevelTheme(level) === 'sea') {
-    generateSeaTerrain(groundBase);
-  } else {
-    generateLandTerrain(groundBase);
-  }
+  if (theme === 'sea') generateSeaTerrain(groundBase);
+  else if (theme === 'cloud') generateCloudTerrain(groundBase);
+  else if (theme === 'cave') generateCaveTerrain(groundBase);
+  else if (theme === 'normandy') generateNormandyTerrain(groundBase);
+  else if (theme === 'forest') generateForestTerrain(groundBase);
+  else generateLandTerrain(groundBase);
 }
 
 function generateLandTerrain(groundBase) {
@@ -459,10 +517,12 @@ function generateSeaTerrain(groundBase) {
   const islandSpacing = WORLD_W / (numIslands + 2);
   for (let i = 0; i < numIslands; i++) {
     // Spread islands across the world, avoiding center (carrier area)
-    let islandCenter;
+    let islandCenter, attempts = 0;
     do {
       islandCenter = Math.floor(islandSpacing * (i + 1) + (Math.random() - 0.5) * islandSpacing * 0.6);
-    } while (Math.abs(islandCenter - baseX - BASE_WIDTH / 2) < 800);
+      attempts++;
+    } while (attempts < 20 && Math.abs(islandCenter - baseX - BASE_WIDTH / 2) < 800);
+    if (Math.abs(islandCenter - baseX - BASE_WIDTH / 2) < 800) continue;
 
     const islandWidth = 200 + Math.floor(Math.random() * 300);
     const islandHeight = 50 + Math.random() * 60; // how much above water
@@ -514,6 +574,250 @@ function addBarrierMountains(groundBase) {
   }
 }
 
+// ── Cloud terrain ──
+function generateCloudTerrain(groundBase) {
+  const cloudBase = canvas.height * 0.78;
+  // Mostly flat cloud layer with mountain peaks poking through
+  for (let x = 0; x < WORLD_W; x++) {
+    terrain[x] = cloudBase;
+  }
+
+  // Mountain peaks sticking above the cloud layer (8-12 peaks)
+  const numPeaks = 8 + Math.floor(Math.random() * 5);
+  const spacing = WORLD_W / (numPeaks + 2);
+  islandPeaks = []; // reuse for building placement
+  for (let i = 0; i < numPeaks; i++) {
+    let peakX, attempts = 0;
+    do {
+      peakX = Math.floor(spacing * (i + 1) + (Math.random() - 0.5) * spacing * 0.5);
+      attempts++;
+    } while (attempts < 20 && Math.abs(peakX - baseX - BASE_WIDTH / 2) < 600);
+    if (Math.abs(peakX - baseX - BASE_WIDTH / 2) < 600) continue; // skip this peak
+
+    const peakWidth = 150 + Math.floor(Math.random() * 200);
+    const peakHeight = 40 + Math.random() * 50;
+    islandPeaks.push({ cx: peakX, w: peakWidth, h: peakHeight });
+
+    for (let dx = -peakWidth / 2; dx <= peakWidth / 2; dx++) {
+      const ix = Math.floor(((peakX + dx) % WORLD_W + WORLD_W) % WORLD_W);
+      const factor = Math.cos((dx / (peakWidth / 2)) * Math.PI * 0.5);
+      const noise = Math.sin(ix * 0.02) * 5;
+      terrain[ix] = Math.min(terrain[ix], cloudBase - peakHeight * factor * factor + noise);
+    }
+  }
+
+  // Flat base on mountain peak
+  const basePeakHeight = 30;
+  for (let dx = -200; dx <= BASE_WIDTH + 200; dx++) {
+    const ix = ((baseX + dx) % WORLD_W + WORLD_W) % WORLD_W;
+    const factor = Math.cos((dx / 200) * Math.PI * 0.5);
+    terrain[ix] = Math.min(terrain[ix], cloudBase - basePeakHeight * factor * factor);
+  }
+  const flatY = cloudBase - basePeakHeight;
+  for (let x = baseX - 80; x < baseX + BASE_WIDTH + 80; x++) {
+    if (x >= 0 && x < WORLD_W) {
+      if (x >= baseX && x <= baseX + BASE_WIDTH) terrain[x] = flatY;
+      else if (x < baseX) terrain[x] = flatY * (1 - (baseX - x) / 80) + terrain[x] * ((baseX - x) / 80);
+      else terrain[x] = flatY * (1 - (x - baseX - BASE_WIDTH) / 80) + terrain[x] * ((x - baseX - BASE_WIDTH) / 80);
+    }
+  }
+  waterLineY = 0;
+  addBarrierMountains(cloudBase - 60);
+}
+
+// ── Cave terrain ──
+function generateCaveTerrain(groundBase) {
+  ceilingTerrain = new Float32Array(WORLD_W);
+  const caveFloor = groundBase + 20;
+
+  // Floor — undulating with noise
+  for (let x = 0; x < WORLD_W; x++) {
+    let h = 0;
+    h += Math.sin(x * 0.003) * 40;
+    h += Math.sin(x * 0.007 + 1.3) * 20;
+    h += Math.sin(x * 0.015 + 2.7) * 10;
+    terrain[x] = caveFloor + h;
+  }
+
+  // Ceiling — inverted noise, variable gap above floor
+  for (let x = 0; x < WORLD_W; x++) {
+    let gap = 280; // default gap
+    // Tight passages at random intervals
+    gap += Math.sin(x * 0.002 + 5.1) * 80;
+    gap += Math.sin(x * 0.006 + 3.3) * 40;
+    // Open chambers periodically
+    if (Math.sin(x * 0.001) > 0.7) gap += 100;
+    gap = Math.max(110, Math.min(400, gap));
+    ceilingTerrain[x] = terrain[x] - gap;
+  }
+
+  // Base — large open chamber
+  const chamberStart = baseX - 200;
+  const chamberEnd = baseX + BASE_WIDTH + 200;
+  const flatFloorY = caveFloor;
+  for (let x = Math.max(0, chamberStart - 80); x < Math.min(WORLD_W, chamberEnd + 80); x++) {
+    if (x >= chamberStart && x <= chamberEnd) {
+      terrain[x] = flatFloorY;
+      ceilingTerrain[x] = flatFloorY - 400;
+    } else if (x < chamberStart) {
+      const t = (chamberStart - x) / 80;
+      terrain[x] = flatFloorY * (1 - t) + terrain[x] * t;
+      ceilingTerrain[x] = (flatFloorY - 400) * (1 - t) + ceilingTerrain[x] * t;
+    } else {
+      const t = (x - chamberEnd) / 80;
+      terrain[x] = flatFloorY * (1 - t) + terrain[x] * t;
+      ceilingTerrain[x] = (flatFloorY - 400) * (1 - t) + ceilingTerrain[x] * t;
+    }
+  }
+
+  waterLineY = 0;
+  islandPeaks = [];
+  addBarrierMountains(caveFloor);
+}
+
+function getCeilingY(x) {
+  if (!ceilingTerrain) return -9999;
+  const ix = Math.floor(((x % WORLD_W) + WORLD_W) % WORLD_W);
+  const ix2 = (ix + 1) % WORLD_W;
+  const frac = x - Math.floor(x);
+  return ceilingTerrain[ix] * (1 - frac) + ceilingTerrain[ix2] * frac;
+}
+
+// ── Normandy terrain ──
+function generateNormandyTerrain(groundBase) {
+  waterLineY = groundBase + 30;
+  islandPeaks = [];
+
+  // Left third: ocean water
+  for (let x = 0; x < WORLD_W; x++) {
+    terrain[x] = waterLineY;
+  }
+
+  // Beach transition: from ~30% to ~50% — sloping sand
+  const beachStart = Math.floor(WORLD_W * 0.3);
+  const beachEnd = Math.floor(WORLD_W * 0.5);
+  for (let x = beachStart; x < beachEnd; x++) {
+    const t = (x - beachStart) / (beachEnd - beachStart);
+    const beachY = waterLineY - t * 60; // gradual slope up
+    const noise = Math.sin(x * 0.01) * 5 + Math.sin(x * 0.03) * 3;
+    terrain[x] = beachY + noise;
+  }
+
+  // Cliffs and bunker platforms: 50% to 90%
+  const cliffStart = beachEnd;
+  const cliffEnd = Math.floor(WORLD_W * 0.9);
+  for (let x = cliffStart; x < cliffEnd; x++) {
+    const t = (x - cliffStart) / (cliffEnd - cliffStart);
+    let h = 0;
+    h += Math.sin(x * 0.003) * 30;
+    h += Math.sin(x * 0.008 + 1.3) * 15;
+    h += Math.sin(x * 0.02 + 2.7) * 8;
+    terrain[x] = waterLineY - 60 - t * 40 + h;
+  }
+
+  // Register cliff areas as "islands" for building placement
+  const numCliffSections = 5;
+  for (let i = 0; i < numCliffSections; i++) {
+    const cx = cliffStart + (cliffEnd - cliffStart) * (i + 0.5) / numCliffSections;
+    islandPeaks.push({ cx, w: (cliffEnd - cliffStart) / numCliffSections, h: 80 });
+  }
+
+  // Carrier base offshore (left side water)
+  const carrierX = Math.floor(WORLD_W * 0.15);
+  baseX = carrierX;
+  const carrierFlatStart = baseX - 80;
+  const carrierFlatEnd = baseX + BASE_WIDTH + 80;
+  const carrierDeckY = waterLineY - 18;
+  for (let x = Math.max(0, carrierFlatStart - 40); x < Math.min(WORLD_W, carrierFlatEnd + 40); x++) {
+    if (x >= carrierFlatStart && x <= carrierFlatEnd) terrain[x] = carrierDeckY;
+    else if (x < carrierFlatStart) {
+      const t = (carrierFlatStart - x) / 40;
+      terrain[x] = carrierDeckY * (1 - t) + waterLineY * t;
+    } else {
+      const t = (x - carrierFlatEnd) / 40;
+      terrain[x] = carrierDeckY * (1 - t) + waterLineY * t;
+    }
+  }
+
+  addBarrierMountains(waterLineY - 60);
+}
+
+// ── Forest terrain ──
+function generateForestTerrain(groundBase) {
+  canopyHeight = new Float32Array(WORLD_W);
+
+  // Standard hilly terrain like land
+  for (let x = 0; x < WORLD_W; x++) {
+    let h = 0;
+    h += Math.sin(x * 0.002) * 60;
+    h += Math.sin(x * 0.005 + 1.3) * 30;
+    h += Math.sin(x * 0.01 + 2.7) * 15;
+    h += Math.sin(x * 0.025 + 0.5) * 8;
+    terrain[x] = groundBase + h;
+  }
+
+  // Tree canopy — variable height above ground with gaps
+  for (let x = 0; x < WORLD_W; x++) {
+    // Gaps every ~300-500px, and at the base
+    const nearBase = Math.abs(x - baseX - BASE_WIDTH / 2) < 300;
+    const gapNoise = Math.sin(x * 0.005) + Math.sin(x * 0.012 + 2.1) + Math.sin(x * 0.003 + 0.7);
+    const isGap = gapNoise > 1.5 || nearBase;
+
+    if (!isGap) {
+      canopyHeight[x] = 40 + Math.sin(x * 0.008) * 15 + Math.sin(x * 0.02 + 1.5) * 10 + Math.random() * 5;
+    } else {
+      canopyHeight[x] = 0;
+    }
+  }
+
+  // Flatten base area
+  const flatY = groundBase;
+  const flatStart = baseX - 150;
+  const flatEnd = baseX + BASE_WIDTH + 400;
+  for (let x = Math.max(0, flatStart - 80); x < Math.min(WORLD_W, flatEnd + 80); x++) {
+    canopyHeight[x] = 0; // clear canopy near base
+    if (x >= flatStart && x <= flatEnd) {
+      terrain[x] = flatY;
+    } else if (x < flatStart) {
+      const t = (flatStart - x) / 80;
+      terrain[x] = flatY * (1 - t) + terrain[x] * t;
+    } else {
+      const t = (x - flatEnd) / 80;
+      terrain[x] = flatY * (1 - t) + terrain[x] * t;
+    }
+  }
+
+  // Flat sections for train tracks
+  const trackSections = 3;
+  for (let i = 0; i < trackSections; i++) {
+    const trackX = 1500 + i * 3000 + Math.floor(Math.random() * 500);
+    if (Math.abs(trackX - baseX) < 500) continue;
+    const trackLen = 600 + Math.floor(Math.random() * 400);
+    const trackY = getTerrainY(trackX + trackLen / 2);
+    for (let dx = -20; dx < trackLen + 20; dx++) {
+      const tx = trackX + dx;
+      if (tx >= 0 && tx < WORLD_W) {
+        if (dx >= 0 && dx < trackLen) terrain[tx] = trackY;
+        else if (dx < 0) terrain[tx] = trackY * (1 - (-dx) / 20) + terrain[tx] * ((-dx) / 20);
+        else terrain[tx] = trackY * (1 - (dx - trackLen) / 20) + terrain[tx] * ((dx - trackLen) / 20);
+        canopyHeight[tx] = 0; // clear canopy over tracks
+      }
+    }
+  }
+
+  waterLineY = 0;
+  islandPeaks = [];
+  addBarrierMountains(groundBase);
+}
+
+function getCanopyY(x) {
+  if (!canopyHeight) return 9999;
+  const ix = Math.floor(((x % WORLD_W) + WORLD_W) % WORLD_W);
+  const ch = canopyHeight[ix];
+  if (ch <= 0) return 9999;
+  return terrain[ix] - ch;
+}
+
 function getTerrainY(x) {
   const ix = Math.floor(((x % WORLD_W) + WORLD_W) % WORLD_W);
   const ix2 = (ix + 1) % WORLD_W;
@@ -561,6 +865,7 @@ function initPlayer() {
     landed: true,
     autopilot: false,
     hp: PLAYER_MAX_HP,
+    wounded: false,        // damaged but flyable — controls respond every other frame
     burning: false,        // on fire or engine out, diving to crash
     engineOut: false,      // true = fuel empty (no fire), false = damage fire
     burnTimer: 0,          // time until explosion
@@ -576,14 +881,22 @@ function initPlayer() {
 
 function spawnBuildings() {
   buildings = [];
-  const isSea = getLevelTheme(level) === 'sea';
+  const theme = getLevelTheme(level);
+  const tc = THEME_CONFIG[theme];
 
   // Weighted type pool based on level and theme
   const pool = [];
   const addW = (t, w) => { for (let i = 0; i < w; i++) pool.push(t); };
-  if (isSea) {
-    // Sea levels: military outpost buildings only
+  if (theme === 'sea') {
     addW('bunker', 3); addW('flak', 3); addW('radar_station', 2); addW('fuel_depot', 2);
+  } else if (theme === 'normandy') {
+    addW('heavyBunker', 4); addW('flak', 3); addW('bunker', 3); addW('radar_station', 2);
+  } else if (theme === 'cave') {
+    addW('bunker', 3); addW('flak', 2); addW('fuel_depot', 2);
+  } else if (theme === 'forest') {
+    addW('flak', 2); addW('bunker', 2); addW('observation_tower', 3); addW('radar_station', 2); addW('fuel_depot', 2);
+  } else if (theme === 'cloud') {
+    addW('flak', 3); addW('bunker', 2); addW('radar_station', 2); addW('fuel_depot', 2);
   } else {
     addW('hangar', 3); addW('factory', 3); addW('flak', 3);
     if (level >= 2) { addW('bunker', 2); addW('fuel_depot', 2); }
@@ -592,10 +905,12 @@ function spawnBuildings() {
 
   const sizeMap = {
     hangar: [50, 30], factory: [60, 40], flak: [30, 45],
-    dam: [100, 25], radar_station: [40, 50], fuel_depot: [45, 30], bunker: [35, 20]
+    dam: [100, 25], radar_station: [40, 50], fuel_depot: [45, 30], bunker: [35, 20],
+    heavyBunker: [50, 25], observation_tower: [20, 60]
   };
   const hpMap = {
-    hangar: 2, factory: 3, flak: 2, dam: 5, radar_station: 2, fuel_depot: 2, bunker: 4
+    hangar: 2, factory: 3, flak: 2, dam: 5, radar_station: 2, fuel_depot: 2, bunker: 4,
+    heavyBunker: 6, observation_tower: 3
   };
 
   const minGap = 300;
@@ -625,8 +940,8 @@ function spawnBuildings() {
     return w;
   }
 
-  if (isSea) {
-    // Sea levels: place buildings only on islands
+  if (theme === 'sea' || (theme === 'normandy' && islandPeaks.length > 0)) {
+    // Sea/normandy levels: place buildings on islands or elevated terrain
     let placed = 0;
     for (const island of islandPeaks) {
       if (placed >= totalCount) break;
@@ -637,12 +952,29 @@ function spawnBuildings() {
       for (let j = 0; j < buildingsPerIsland && placed < totalCount; j++) {
         const bx = lastIX + 60 + Math.random() * 80;
         if (bx >= islandRight) break;
-        // Only place if terrain is above water (island surface)
         const ty = getTerrainY(bx);
         if (ty < waterLineY - 15) {
           const w = placeBuilding(bx);
           lastIX = bx + w;
           placed++;
+        }
+      }
+    }
+    // Normandy: also place bunkers on beach/cliff areas
+    if (theme === 'normandy') {
+      const beachStart = Math.floor(WORLD_W * 0.35);
+      const beachEnd = Math.floor(WORLD_W * 0.85);
+      let lastBX = beachStart;
+      while (placed < totalCount && lastBX < beachEnd) {
+        const bx = lastBX + minGap + Math.random() * 300;
+        if (bx >= beachEnd) break;
+        const ty = getTerrainY(bx);
+        if (ty < waterLineY - 15) {
+          const w = placeBuilding(bx);
+          lastBX = bx + w;
+          placed++;
+        } else {
+          lastBX = bx + 100;
         }
       }
     }
@@ -677,13 +1009,14 @@ let enemyBases = []; // { x, width } — enemy landing fields
 
 function spawnEnemyBases() {
   enemyBases = [];
-  const isSea = getLevelTheme(level) === 'sea';
+  const theme = getLevelTheme(level);
+  const needsIsland = theme === 'sea' || theme === 'normandy';
 
   // Always place enemy airfields at world edges — both land and sea levels
   const positions = [300, WORLD_W - 300 - BASE_WIDTH];
   for (const bx of positions) {
-    // On sea levels, ensure there's solid ground (create an island) at edge positions
-    if (isSea) {
+    // On water levels, ensure there's solid ground (create an island) at edge positions
+    if (needsIsland) {
       const centerX = bx + BASE_WIDTH / 2;
       const islandWidth = 300;
       for (let dx = -islandWidth / 2; dx <= islandWidth / 2; dx++) {
@@ -807,7 +1140,9 @@ function spawnEnemies() {
     // Randomized type selection — all types can appear from level 1
     let type = 'biplane';
     const r = Math.random();
-    if (r < 0.06 && zeppelinCount < 1) { type = 'zeppelin'; zeppelinCount++; }
+    const theme = getLevelTheme(level);
+    if (theme === 'cloud' && r < 0.35) { type = 'ace'; } // Cloud: more ace pilots
+    else if (r < 0.06 && zeppelinCount < 1) { type = 'zeppelin'; zeppelinCount++; }
     else if (r < 0.20) type = 'bomber';
     else if (r < 0.45) type = 'jet';
 
@@ -954,16 +1289,54 @@ function initLevel() {
   dragons = [];
   submarines = [];
   parachutes = [];
+  fuelTankers = [];
+  bats = [];
+  caveTurrets = [];
+  tanks = [];
+  barrageBalloons = [];
+  aaGuns = [];
+  trains = [];
   enemyAccuracyDebuff = 0;
   spawnBuildings();
   spawnEnemies();
-  if (getLevelTheme(level) === 'land') {
+
+  const theme = getLevelTheme(level);
+  const tc = THEME_CONFIG[theme];
+
+  // Animals only on ground-based themes without water
+  if (theme === 'land' || theme === 'forest') {
     spawnAnimals();
   } else {
-    oxen = []; // no ground animals on sea levels
+    oxen = [];
+  }
+
+  // Sea creatures on water themes
+  if (tc.hasWater === true) {
     spawnSubmarines();
     spawnSpeedboats();
+  } else if (tc.hasWater === 'partial') {
+    // Normandy has partial water — spawn some speedboats
+    spawnSpeedboats();
+    submarines = [];
+  } else {
+    speedboats = [];
+    submarines = [];
   }
+
+  // Theme-specific spawns
+  if (theme === 'cloud') {
+    spawnFuelTankers();
+  } else if (theme === 'cave') {
+    spawnBats();
+    spawnCaveTurrets();
+  } else if (theme === 'normandy') {
+    spawnTanks();
+    spawnBarrageBalloons();
+  } else if (theme === 'forest') {
+    spawnAAGuns();
+    spawnTrains();
+  }
+
   spawnBirds();
   spawnDragons();
 }
@@ -1023,8 +1396,11 @@ function spawnFleeingPeople(x, groundY) {
 
 // ── Building destruction special effects ──
 function onBuildingDestroyed(bld) {
-  // Spawn fleeing people (except bunker, and not on sea levels — military outposts)
-  if (bld.type !== 'bunker' && getLevelTheme(level) !== 'sea') {
+  addValourScore(buildingScores[bld.type] || 100, bld.x);
+
+  // Spawn fleeing people (except bunker/heavyBunker, and not on sea/normandy — military outposts)
+  const theme = getLevelTheme(level);
+  if (bld.type !== 'bunker' && bld.type !== 'heavyBunker' && theme !== 'sea' && theme !== 'normandy') {
     spawnFleeingPeople(bld.x + bld.w / 2, bld.y + bld.h);
   }
 
@@ -1753,6 +2129,29 @@ function update(dt) {
     updateDragons(dt);
     updateSubmarines(dt);
     updateSpeedboats(dt);
+    // Theme-specific updates
+    const curTheme = getLevelTheme(level);
+    if (curTheme === 'cloud') updateFuelTankers(dt);
+    if (curTheme === 'cave') { updateBats(dt); updateCaveTurrets(dt); }
+    if (curTheme === 'normandy') { updateTanks(dt); updateBarrageBalloons(dt); }
+    if (curTheme === 'forest') { updateAAGuns(dt); updateTrains(dt); }
+    // Player crashes into tanks/trains
+    if (!player.landed && !player.burning && player.invincible <= 0) {
+      for (const tank of tanks) {
+        if (!tank.alive) continue;
+        if (Math.abs(player.x - tank.x) < 15 && Math.abs(player.y - tank.y) < 12) {
+          tank.alive = false; addExplosion(tank.x, tank.y, 25, true); playBoom(true);
+          score += 350; damagePlayer(2); break;
+        }
+      }
+      for (const tr of trains) {
+        if (!tr.alive) continue;
+        const trainLen = tr.segments * (tr.segmentWidth + 3);
+        if (player.x > tr.x - trainLen - 5 && player.x < tr.x + 15 && Math.abs(player.y - tr.y) < 15) {
+          damagePlayer(2); addExplosion(player.x, player.y, 15, true); break;
+        }
+      }
+    }
     // Player crashes into buildings — both destroyed
     if (!player.landed && !player.burning && player.invincible <= 0) {
       for (const bld of buildings) {
@@ -1879,7 +2278,7 @@ function updatePlayer(dt) {
         p.x = homeX; p.y = homeY;
         p.fuel = MAX_FUEL; p.ammo = MAX_AMMO; p.bombCount = MAX_BOMBS;
         p.depthCharges = MAX_DEPTH_CHARGES;
-        p.hp = PLAYER_MAX_HP; // Repair on landing
+        p.hp = PLAYER_MAX_HP; p.wounded = false; // Repair on landing
       }
       return; // Skip normal physics — beam handles everything
     }
@@ -1936,8 +2335,19 @@ function updatePlayer(dt) {
     }
   }
 
+  // ── Wounded smoke trail ──
+  if (p.wounded && !p.burning && !p.landed) {
+    if (Math.random() < 0.25) {
+      const rad = getPlaneRadians(p);
+      addParticle(p.x - Math.cos(rad) * 12, p.y - Math.sin(rad) * 12,
+        (Math.random() - 0.5) * 15, -8 - Math.random() * 8, 0.4, '#555', 2);
+    }
+  }
+
   // ── Manual controls ──
-  if (!p.autopilot && !p.burning) {
+  // Wounded state: controls only respond every other frame (sluggish)
+  const controlsActive = !p.wounded || (p.moveCount % 2 === 0);
+  if (!p.autopilot && !p.burning && controlsActive) {
     // Accelerate (X or ArrowUp)
     if (keys['KeyX'] || keys['ArrowUp']) {
       if (p.accel < PLANE_MAX_ACCEL) p.accel++;
@@ -2143,6 +2553,25 @@ function updatePlayer(dt) {
       }
     }
 
+    // Ceiling collision (cave theme)
+    if (ceilingTerrain) {
+      const ceilY = getCeilingY(p.x);
+      if (p.y <= ceilY + 8) {
+        killPlayer();
+        return;
+      }
+    }
+
+    // Canopy collision (forest theme)
+    if (canopyHeight) {
+      const canY = getCanopyY(p.x);
+      if (canY < 9999 && p.y >= canY - 5 && p.y < getTerrainY(p.x) - 15) {
+        damagePlayer(1);
+        p.y = canY - 8;
+        p.vy = -Math.abs(p.vy) * 0.3;
+      }
+    }
+
     // Ground collision
     const groundY = getTerrainY(p.x);
     if (p.y >= groundY - 8) {
@@ -2158,7 +2587,7 @@ function updatePlayer(dt) {
         p.landed = true; p.stalled = false;
         p.fuel = MAX_FUEL; p.ammo = MAX_AMMO; p.bombCount = MAX_BOMBS;
         p.depthCharges = MAX_DEPTH_CHARGES;
-        p.hp = PLAYER_MAX_HP; // Repair on landing
+        p.hp = PLAYER_MAX_HP; p.wounded = false; // Repair on landing
       } else {
         killPlayer();
         return;
@@ -2167,6 +2596,16 @@ function updatePlayer(dt) {
   } else {
     // ── On ground at base ──
     if (keys['KeyX'] || keys['ArrowUp']) {
+      // Award Purple Heart if survived wounded flight
+      if (p.wounded) awardMedal('purple_heart');
+      // Award Perfect Flight if completed previous flight undamaged
+      if (flightStats.damageTaken === 0 && flightStats.kills > 0) awardMedal('perfect');
+      // Award ace medals
+      if (flightStats.kills >= 15) awardMedal('top_ace');
+      else if (flightStats.kills >= 5) awardMedal('ace');
+      if (flightStats.valour >= 500) awardMedal('valour');
+      // Reset flight stats for new sortie
+      flightStats = { kills: 0, damageTaken: 0, valour: 0 };
       p.landed = false;
       p.stalled = false;
       p.orient = false;
@@ -2187,6 +2626,7 @@ function damagePlayer(amount) {
   player.hp -= amount;
   player.hitFlash = 0.3;
   player.invincible = 0.5; // brief i-frames after hit
+  flightStats.damageTaken += amount;
   addExplosion(player.x, player.y, 8, false);
   if (player.hp <= 0) {
     // Plane is destroyed — start burning dive
@@ -2202,6 +2642,9 @@ function damagePlayer(amount) {
       deployTimer: 0.3,
       landed: false
     });
+  } else if (player.hp === 1) {
+    // Wounded state — plane is damaged but flyable
+    player.wounded = true;
   }
 }
 
@@ -2211,6 +2654,7 @@ function startEnemyBurn(en) {
   en.burnTimer = 1.5;
   en.speed = en.speed * 0.4; // slow down
   score += ENEMY_SPECS[en.type].score;
+  addValourScore(ENEMY_SPECS[en.type].score, en.x);
 }
 
 function killEnemy(en) {
@@ -2281,6 +2725,13 @@ function updateBullets(dt) {
 
     // Despawn at world edges
     if (b.x < 0 || b.x >= WORLD_W) { bullets.splice(i, 1); continue; }
+
+    // Ceiling hit (cave theme)
+    if (ceilingTerrain && b.y <= getCeilingY(b.x)) {
+      addParticle(b.x, b.y, 0, 30, 0.2, '#f80', 2);
+      bullets.splice(i, 1);
+      continue;
+    }
 
     // Ground hit
     if (b.y >= getTerrainY(b.x)) {
@@ -2405,6 +2856,71 @@ function updateBullets(dt) {
       }
     }
 
+    // Friendly bullets hit theme-specific entities
+    if (b.friendly) {
+      // Fuel tankers (cloud)
+      for (const ft of fuelTankers) {
+        if (!ft.alive) continue;
+        if (Math.abs(b.x - ft.x) < 30 && Math.abs(b.y - ft.y) < 15) {
+          ft.hp--;
+          if (ft.hp <= 0) { ft.alive = false; addExplosion(ft.x, ft.y, 30, true); playBoom(true); score += 200; }
+          else addExplosion(b.x, b.y, 5, false);
+          bullets.splice(i, 1); break;
+        }
+      }
+      // Tanks (normandy)
+      for (const tank of tanks) {
+        if (!tank.alive) continue;
+        if (Math.abs(b.x - tank.x) < 15 && Math.abs(b.y - tank.y) < 12) {
+          tank.hp--;
+          if (tank.hp <= 0) { tank.alive = false; addExplosion(tank.x, tank.y, 25, true); playBoom(true); score += 350; }
+          else addExplosion(b.x, b.y, 5, false);
+          bullets.splice(i, 1); break;
+        }
+      }
+      // Barrage balloons (normandy)
+      for (const bb of barrageBalloons) {
+        if (!bb.alive) continue;
+        const swayOff = Math.sin(bb.sway * 0.5) * 5;
+        if (Math.abs(b.x - (bb.x + swayOff)) < 12 && Math.abs(b.y - bb.y) < 18) {
+          bb.hp--;
+          if (bb.hp <= 0) { bb.alive = false; addExplosion(bb.x, bb.y, 15, true); score += 150; }
+          else addExplosion(b.x, b.y, 5, false);
+          bullets.splice(i, 1); break;
+        }
+      }
+      // AA guns (forest — only hittable when visible)
+      for (const aa of aaGuns) {
+        if (!aa.alive || aa.hidden) continue;
+        if (Math.abs(b.x - aa.x) < 12 && Math.abs(b.y - aa.y) < 12) {
+          aa.hp--;
+          if (aa.hp <= 0) { aa.alive = false; addExplosion(aa.x, aa.y, 20, true); playBoom(false); score += 300; }
+          else addExplosion(b.x, b.y, 5, false);
+          bullets.splice(i, 1); break;
+        }
+      }
+      // Trains (forest)
+      for (const tr of trains) {
+        if (!tr.alive) continue;
+        const trainLen = tr.segments * (tr.segmentWidth + 3);
+        const dir = tr.vx > 0 ? 1 : -1;
+        if (b.x > tr.x - dir * trainLen - 15 && b.x < tr.x + 15 && Math.abs(b.y - tr.y) < 15) {
+          tr.hp--;
+          addExplosion(b.x, b.y, 8, false);
+          if (tr.hp <= 0) { tr.alive = false; addExplosion(tr.x, tr.y, 30, true); playBoom(true); score += 600; }
+          bullets.splice(i, 1); break;
+        }
+      }
+      // Bats (cave)
+      for (const bat of bats) {
+        if (!bat.alive) continue;
+        if (Math.abs(b.x - bat.x) < 8 && Math.abs(b.y - bat.y) < 8) {
+          bat.alive = false; addExplosion(bat.x, bat.y, 5, false); score += 50;
+          bullets.splice(i, 1); break;
+        }
+      }
+    }
+
     // Enemy bullets hit player
     if (!b.friendly && player.invincible <= 0 && !player.burning) {
       if (Math.abs(b.x - player.x) < 18 && Math.abs(b.y - player.y) < 10) {
@@ -2482,6 +2998,33 @@ function updateBombs(dt) {
           break;
         }
       }
+    }
+
+    // Player bombs hit theme-specific ground targets
+    if (!hit && b.friendly !== false) {
+      for (const tank of tanks) {
+        if (!tank.alive) continue;
+        if (Math.abs(b.x - tank.x) < 18 && Math.abs(b.y - tank.y) < 12) {
+          tank.hp -= 2;
+          if (tank.hp <= 0) { tank.alive = false; score += 350; }
+          addExplosion(b.x, b.y, 20, true); playBoom(true); hit = true; break;
+        }
+      }
+      if (!hit) for (const tr of trains) {
+        if (!tr.alive) continue;
+        const trainLen = tr.segments * (tr.segmentWidth + 3);
+        const dir = tr.vx > 0 ? 1 : -1;
+        if (b.x > tr.x - dir * trainLen - 15 && b.x < tr.x + 15 && Math.abs(b.y - tr.y) < 18) {
+          tr.hp -= 3;
+          if (tr.hp <= 0) { tr.alive = false; score += 600; }
+          addExplosion(b.x, b.y, 20, true); playBoom(true); hit = true; break;
+        }
+      }
+    }
+
+    // Ceiling hit (cave theme)
+    if (!hit && ceilingTerrain && b.y <= getCeilingY(b.x)) {
+      hit = true;
     }
 
     // Ground hit (checked after buildings so bombs can hit structures on terrain)
@@ -2882,9 +3425,10 @@ function updateEnemies(dt) {
         addParticle(en.x + (Math.random() - 0.5) * 10, en.y,
           (Math.random() - 0.5) * 15, -10 - Math.random() * 15, 0.6, '#333', 3);
       }
-      // Hit terrain or timer expired: final explosion
+      // Hit terrain/ceiling or timer expired: final explosion
       const burnGroundY = getTerrainY(en.x);
-      if (en.y > burnGroundY - 8 || en.burnTimer <= 0) {
+      const burnCeilY = ceilingTerrain ? getCeilingY(en.x) : -9999;
+      if (en.y > burnGroundY - 8 || en.y < burnCeilY + 8 || en.burnTimer <= 0) {
         killEnemy(en);
       }
       continue;
@@ -3003,6 +3547,8 @@ function updateEnemies(dt) {
           dist = updateZeppelinEnemy(en, dt);
         } else if (en.type === 'bomber') {
           dist = updateBomberEnemy(en, dt, playerSafe);
+        } else if (en.type === 'ace') {
+          dist = updateChaserEnemy(en, dt, playerSafe, 2.0, 0.95);
         } else if (en.type === 'jet') {
           dist = updateChaserEnemy(en, dt, playerSafe, 1.6, 0.85);
         } else {
@@ -3032,6 +3578,14 @@ function updateEnemies(dt) {
             }
           }
         }
+      }
+    }
+
+    // Cave ceiling collision for enemies
+    if (ceilingTerrain && (en.state === 'flying' || en.state === 'returning')) {
+      const ceilY = getCeilingY(en.x);
+      if (en.y < ceilY + 10) {
+        startEnemyBurn(en);
       }
     }
 
@@ -3070,7 +3624,7 @@ function updateEnemies(dt) {
 function updateFlak(dt) {
   // Buildings shoot flak
   for (const bld of buildings) {
-    if (!bld.alive || bld.type !== 'flak') continue;
+    if (!bld.alive || (bld.type !== 'flak' && bld.type !== 'heavyBunker' && bld.type !== 'observation_tower')) continue;
     bld.flakTimer--;
     if (bld.flakTimer <= 0) {
       const dx = player.x - (bld.x + bld.w / 2);
@@ -3086,7 +3640,8 @@ function updateFlak(dt) {
           life: 1.5
         });
       }
-      bld.flakTimer = FLAK_INTERVAL + Math.random() * 40 | 0; // More random timing
+      const interval = bld.type === 'heavyBunker' ? FLAK_INTERVAL * 0.6 : FLAK_INTERVAL;
+      bld.flakTimer = interval + Math.random() * 40 | 0; // More random timing
     }
   }
 
@@ -3298,7 +3853,11 @@ function updateDragons(dt) {
 
 function checkLevelComplete() {
   const targets = buildings.filter(b => b.isTarget && b.alive);
-  if (targets.length === 0) {
+  // Theme-specific targets
+  const themeTgts = tanks.filter(t => t.alive).length +
+    trains.filter(t => t.alive).length +
+    aaGuns.filter(a => a.alive).length;
+  if (targets.length === 0 && themeTgts === 0) {
     state = ST.LEVEL_COMPLETE;
     levelTimer = 3;
     score += 1000 * level;
@@ -3621,6 +4180,13 @@ function draw() {
     drawSpeedboat(sb);
   }
 
+  // Theme-specific entities
+  const drawTheme = getLevelTheme(level);
+  if (drawTheme === 'cloud') drawFuelTankers();
+  if (drawTheme === 'cave') { drawBats(); drawCaveTurrets(); }
+  if (drawTheme === 'normandy') { drawTanks(); drawBarrageBalloons(); }
+  if (drawTheme === 'forest') { drawAAGuns(); drawTrains(); }
+
   // Bombs & Torpedoes
   for (const b of bombs) {
     const screenX = b.x - camX;
@@ -3912,16 +4478,37 @@ function draw() {
     ctx.fillStyle = '#f55';
     ctx.font = 'bold 36px "Courier New", monospace';
     ctx.textAlign = 'center';
-    ctx.fillText('GAME OVER', W / 2, H / 2 - 30);
+    ctx.fillText('GAME OVER', W / 2, H / 2 - 50);
     clearGlow(ctx);
     ctx.fillStyle = '#888';
     ctx.font = '16px "Courier New", monospace';
-    ctx.fillText(`FINAL SCORE: ${score}`, W / 2, H / 2 + 10);
-    ctx.fillText('Press ENTER to restart from Level 1', W / 2, H / 2 + 40);
+    ctx.fillText(`FINAL SCORE: ${score}`, W / 2, H / 2 - 20);
+
+    // Medals earned this game
+    if (earnedMedals.size > 0) {
+      ctx.font = '11px "Courier New", monospace';
+      ctx.fillStyle = '#aa8';
+      ctx.fillText('MEDALS EARNED:', W / 2, H / 2 + 10);
+      let mx = 0;
+      for (const key of earnedMedals) {
+        const m = MEDALS[key];
+        neonGlow(ctx, m.color, 6);
+        ctx.fillStyle = m.color;
+        ctx.font = '10px "Courier New", monospace';
+        ctx.fillText(`${m.icon} ${m.name}`, W / 2, H / 2 + 28 + mx * 15);
+        mx++;
+      }
+      clearGlow(ctx);
+    }
+
+    const btnY = earnedMedals.size > 0 ? H / 2 + 35 + earnedMedals.size * 15 : H / 2 + 20;
+    ctx.fillStyle = '#888';
+    ctx.font = '16px "Courier New", monospace';
+    ctx.fillText('Press ENTER to restart from Level 1', W / 2, btnY);
     if (highestLevel > 1) {
       neonGlow(ctx, '#0ff', 6);
       ctx.fillStyle = '#0ff';
-      ctx.fillText(`Press C to continue from Level ${highestLevel}`, W / 2, H / 2 + 65);
+      ctx.fillText(`Press C to continue from Level ${highestLevel}`, W / 2, btnY + 25);
       clearGlow(ctx);
     }
   }
@@ -3967,6 +4554,64 @@ function draw() {
     ctx.restore();
   }
 
+  // Medal popup
+  if (medalPopup) {
+    medalPopup.timer -= 0.016;
+    if (medalPopup.timer <= 0) { medalPopup = null; }
+    else {
+      const m = MEDALS[medalPopup.medal];
+      const alpha = Math.min(1, medalPopup.timer / 0.5);
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      neonGlow(ctx, m.color, 10);
+      ctx.fillStyle = m.color;
+      ctx.globalAlpha = alpha;
+      ctx.font = 'bold 14px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${m.icon} ${m.name} ${m.icon}`, W / 2, 40);
+      ctx.font = '10px "Courier New", monospace';
+      ctx.fillText(m.desc, W / 2, 55);
+      ctx.globalAlpha = 1;
+      clearGlow(ctx);
+      ctx.restore();
+    }
+  }
+
+  // Wounded HUD indicator
+  if (player.wounded && !player.burning && state === ST.PLAYING) {
+    const flash = Math.sin(Date.now() * 0.008) > 0 ? 0.8 : 0.4;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = `rgba(255, 100, 0, ${flash})`;
+    ctx.font = 'bold 11px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('WOUNDED', W / 2, H - 50);
+    ctx.restore();
+  }
+
+  // Docking HUD for fuel tankers
+  if (fuelTankers.some(ft => ft.alive && ft.docking)) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const ft = fuelTankers.find(ft => ft.alive && ft.docking);
+    if (ft) {
+      const barW = 120, barH = 10;
+      const bx = W / 2 - barW / 2, by = 60;
+      neonGlow(ctx, '#0af', 6);
+      ctx.strokeStyle = '#0af';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx, by, barW, barH);
+      ctx.fillStyle = ft.dockingProgress >= 1 ? '#0f0' : '#0af';
+      ctx.fillRect(bx, by, barW * ft.dockingProgress, barH);
+      ctx.fillStyle = '#fff';
+      ctx.font = '10px "Courier New", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(ft.dockingProgress >= 1 ? 'REFUELING...' : 'DOCKING ' + Math.floor(ft.dockingProgress * 100) + '%', W / 2, by - 4);
+      clearGlow(ctx);
+    }
+    ctx.restore();
+  }
+
   // Top strip radar
   drawRadar();
 
@@ -3990,16 +4635,17 @@ function drawTerrain(W, H) {
   const startX = Math.max(0, Math.floor(camX) - 2);
   const endX = Math.min(WORLD_W - 1, Math.floor(camX + W) + 2);
   const terrainBottom = camY + H + 50;
-  const isSea = getLevelTheme(level) === 'sea';
+  const theme = getLevelTheme(level);
+  const tc = THEME_CONFIG[theme];
+  const hasWater = tc.hasWater === true || tc.hasWater === 'partial';
 
   // Filled terrain
-  ctx.fillStyle = isSea ? '#0a1a2a' : '#0d1a0d';
+  ctx.fillStyle = tc.bg;
   ctx.beginPath();
   ctx.moveTo(startX, terrainBottom);
   for (let x = startX; x <= endX; x += 2) {
     let ty = terrain[x];
-    // Animated wave effect for sea levels on water areas
-    if (isSea && ty >= waterLineY - 5) {
+    if (hasWater && ty >= waterLineY - 5) {
       ty += Math.sin(Date.now() * 0.003 + x * 0.02) * 2 + Math.sin(Date.now() * 0.005 + x * 0.04) * 1;
     }
     ctx.lineTo(x, ty);
@@ -4008,81 +4654,251 @@ function drawTerrain(W, H) {
   ctx.closePath();
   ctx.fill();
 
-  // Terrain line (color depends on theme)
-  if (isSea) {
-    // Draw different colors for water vs island terrain
-    // First pass: water areas (blue)
-    neonGlow(ctx, '#0af', 8);
-    ctx.strokeStyle = '#0af';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    let inWater = true;
-    for (let x = startX; x <= endX; x += 2) {
-      let ty = terrain[x];
-      const isWaterHere = ty >= waterLineY - 10;
-      if (isWaterHere) {
-        ty += Math.sin(Date.now() * 0.003 + x * 0.02) * 2 + Math.sin(Date.now() * 0.005 + x * 0.04) * 1;
-      }
-      if (x === startX || (isWaterHere !== inWater)) {
-        ctx.moveTo(x, ty);
-        inWater = isWaterHere;
-      } else if (isWaterHere) {
-        ctx.lineTo(x, ty);
-      }
-    }
-    ctx.stroke();
-    clearGlow(ctx);
-
-    // Second pass: island terrain (green)
-    neonGlow(ctx, '#0f8', 8);
-    ctx.strokeStyle = '#0fa';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    let onIsland = false;
-    for (let x = startX; x <= endX; x += 2) {
-      const ty = terrain[x];
-      const isIslandHere = ty < waterLineY - 10;
-      if (x === startX || (isIslandHere !== onIsland)) {
-        ctx.moveTo(x, ty);
-        onIsland = isIslandHere;
-      } else if (isIslandHere) {
-        ctx.lineTo(x, ty);
-      }
-    }
-    ctx.stroke();
-    clearGlow(ctx);
-
-    // Thin highlight line on water surface
-    ctx.strokeStyle = 'rgba(100, 200, 255, 0.3)';
-    ctx.lineWidth = 0.5;
-    ctx.beginPath();
-    for (let x = startX; x <= endX; x += 4) {
-      if (terrain[x] >= waterLineY - 5) {
-        const wy = terrain[x] + Math.sin(Date.now() * 0.003 + x * 0.02) * 2;
-        if (x === startX) ctx.moveTo(x, wy);
-        else ctx.lineTo(x, wy);
-      }
-    }
-    ctx.stroke();
+  // Theme-specific terrain rendering
+  if (hasWater) {
+    drawWaterTerrain(startX, endX, tc);
+  } else if (theme === 'cloud') {
+    drawCloudTerrainLine(startX, endX, tc);
+  } else if (theme === 'cave') {
+    drawCaveTerrainLine(startX, endX, terrainBottom, tc);
+  } else if (theme === 'forest') {
+    drawForestTerrainLine(startX, endX, tc);
   } else {
-    // Land theme: standard green terrain
-    neonGlow(ctx, '#0f8', 8);
-    ctx.strokeStyle = '#0fa';
+    drawStandardTerrainLine(startX, endX, tc);
+  }
+}
+
+function drawWaterTerrain(startX, endX, tc) {
+  const waterColor = tc.terrainColor === '#aa8' ? '#68a' : '#0af';
+  const landColor = tc.terrainColor === '#aa8' ? '#aa8' : '#0fa';
+  const landGlow = tc.terrainColor === '#aa8' ? '#cc9' : '#0f8';
+
+  // Water areas
+  neonGlow(ctx, waterColor, 8);
+  ctx.strokeStyle = waterColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  let inWater = true;
+  for (let x = startX; x <= endX; x += 2) {
+    let ty = terrain[x];
+    const isWaterHere = ty >= waterLineY - 10;
+    if (isWaterHere) {
+      ty += Math.sin(Date.now() * 0.003 + x * 0.02) * 2 + Math.sin(Date.now() * 0.005 + x * 0.04) * 1;
+    }
+    if (x === startX || (isWaterHere !== inWater)) {
+      ctx.moveTo(x, ty);
+      inWater = isWaterHere;
+    } else if (isWaterHere) {
+      ctx.lineTo(x, ty);
+    }
+  }
+  ctx.stroke();
+  clearGlow(ctx);
+
+  // Island/land terrain
+  neonGlow(ctx, landGlow, 8);
+  ctx.strokeStyle = landColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  let onIsland = false;
+  for (let x = startX; x <= endX; x += 2) {
+    const ty = terrain[x];
+    const isIslandHere = ty < waterLineY - 10;
+    if (x === startX || (isIslandHere !== onIsland)) {
+      ctx.moveTo(x, ty);
+      onIsland = isIslandHere;
+    } else if (isIslandHere) {
+      ctx.lineTo(x, ty);
+    }
+  }
+  ctx.stroke();
+  clearGlow(ctx);
+
+  // Water surface highlight
+  ctx.strokeStyle = 'rgba(100, 200, 255, 0.3)';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += 4) {
+    if (terrain[x] >= waterLineY - 5) {
+      const wy = terrain[x] + Math.sin(Date.now() * 0.003 + x * 0.02) * 2;
+      if (x === startX) ctx.moveTo(x, wy);
+      else ctx.lineTo(x, wy);
+    }
+  }
+  ctx.stroke();
+}
+
+function drawStandardTerrainLine(startX, endX, tc) {
+  neonGlow(ctx, tc.glow, 8);
+  ctx.strokeStyle = tc.terrainColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += 2) {
+    if (x === startX) ctx.moveTo(x, terrain[x]);
+    else ctx.lineTo(x, terrain[x]);
+  }
+  ctx.stroke();
+
+  ctx.strokeStyle = '#5ff';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += 2) {
+    if (x === startX) ctx.moveTo(x, terrain[x]);
+    else ctx.lineTo(x, terrain[x]);
+  }
+  ctx.stroke();
+  clearGlow(ctx);
+}
+
+function drawCloudTerrainLine(startX, endX, tc) {
+  // Draw mountain peaks above clouds
+  neonGlow(ctx, tc.glow, 8);
+  ctx.strokeStyle = tc.terrainColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += 2) {
+    if (x === startX) ctx.moveTo(x, terrain[x]);
+    else ctx.lineTo(x, terrain[x]);
+  }
+  ctx.stroke();
+  clearGlow(ctx);
+
+  // Cloud layer — fluffy semi-transparent
+  const cloudY = canvas.height * 0.75;
+  ctx.fillStyle = 'rgba(200, 210, 230, 0.12)';
+  ctx.beginPath();
+  ctx.moveTo(startX, cloudY + 60);
+  for (let x = startX; x <= endX; x += 4) {
+    const cy = cloudY + Math.sin(x * 0.008 + Date.now() * 0.0005) * 15 + Math.sin(x * 0.02) * 8;
+    ctx.lineTo(x, cy);
+  }
+  ctx.lineTo(endX, cloudY + 60);
+  ctx.closePath();
+  ctx.fill();
+
+  // Cloud top edge glow
+  ctx.strokeStyle = 'rgba(180, 190, 220, 0.4)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += 4) {
+    const cy = cloudY + Math.sin(x * 0.008 + Date.now() * 0.0005) * 15 + Math.sin(x * 0.02) * 8;
+    if (x === startX) ctx.moveTo(x, cy);
+    else ctx.lineTo(x, cy);
+  }
+  ctx.stroke();
+}
+
+function drawCaveTerrainLine(startX, endX, terrainBottom, tc) {
+  // Floor
+  neonGlow(ctx, tc.glow, 8);
+  ctx.strokeStyle = tc.terrainColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += 2) {
+    if (x === startX) ctx.moveTo(x, terrain[x]);
+    else ctx.lineTo(x, terrain[x]);
+  }
+  ctx.stroke();
+  clearGlow(ctx);
+
+  // Ceiling
+  if (ceilingTerrain) {
+    // Ceiling fill (dark area above)
+    ctx.fillStyle = tc.bg;
+    ctx.beginPath();
+    ctx.moveTo(startX, camY - 50);
+    for (let x = startX; x <= endX; x += 2) {
+      ctx.lineTo(x, ceilingTerrain[x] || 0);
+    }
+    ctx.lineTo(endX, camY - 50);
+    ctx.closePath();
+    ctx.fill();
+
+    // Ceiling line
+    neonGlow(ctx, tc.glow, 8);
+    ctx.strokeStyle = tc.terrainColor;
     ctx.lineWidth = 2;
     ctx.beginPath();
     for (let x = startX; x <= endX; x += 2) {
-      if (x === startX) ctx.moveTo(x, terrain[x]);
-      else ctx.lineTo(x, terrain[x]);
+      const cy = ceilingTerrain[x] || 0;
+      if (x === startX) ctx.moveTo(x, cy);
+      else ctx.lineTo(x, cy);
     }
     ctx.stroke();
+    clearGlow(ctx);
 
-    // Second glow line (brighter, thinner)
-    ctx.strokeStyle = '#5ff';
-    ctx.lineWidth = 0.5;
+    // Stalactites/crystals decoration
+    neonGlow(ctx, '#fa0', 4);
+    ctx.fillStyle = 'rgba(255, 160, 0, 0.3)';
+    for (let x = startX; x <= endX; x += 80) {
+      const cy = ceilingTerrain[x] || 0;
+      if (Math.sin(x * 0.1) > 0.6) {
+        const crystalLen = 8 + Math.sin(x * 0.3) * 6;
+        ctx.beginPath();
+        ctx.moveTo(x - 3, cy);
+        ctx.lineTo(x, cy + crystalLen);
+        ctx.lineTo(x + 3, cy);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    clearGlow(ctx);
+  }
+}
+
+function drawForestTerrainLine(startX, endX, tc) {
+  // Ground
+  neonGlow(ctx, tc.glow, 8);
+  ctx.strokeStyle = '#062';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += 2) {
+    if (x === startX) ctx.moveTo(x, terrain[x]);
+    else ctx.lineTo(x, terrain[x]);
+  }
+  ctx.stroke();
+  clearGlow(ctx);
+
+  // Tree canopy
+  if (canopyHeight) {
+    const isAutumn = (Math.floor((level - 1) / 6) % 2 === 1);
+    const canopyColor = isAutumn ? 'rgba(180, 80, 20, 0.25)' : 'rgba(0, 160, 0, 0.2)';
+    const canopyStroke = isAutumn ? '#a50' : tc.terrainColor;
+    const canopyGlow = isAutumn ? '#f80' : tc.glow;
+
+    ctx.fillStyle = canopyColor;
     ctx.beginPath();
+    let inCanopy = false;
     for (let x = startX; x <= endX; x += 2) {
-      if (x === startX) ctx.moveTo(x, terrain[x]);
-      else ctx.lineTo(x, terrain[x]);
+      const ch = canopyHeight[x];
+      if (ch > 0) {
+        const canopyY = terrain[x] - ch;
+        if (!inCanopy) { ctx.moveTo(x, terrain[x]); inCanopy = true; }
+        ctx.lineTo(x, canopyY);
+      } else if (inCanopy) {
+        ctx.lineTo(x, terrain[x]);
+        inCanopy = false;
+      }
+    }
+    if (inCanopy) ctx.lineTo(endX, terrain[endX]);
+    ctx.closePath();
+    ctx.fill();
+
+    // Canopy top line
+    neonGlow(ctx, canopyGlow, 6);
+    ctx.strokeStyle = canopyStroke;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let started = false;
+    for (let x = startX; x <= endX; x += 2) {
+      const ch = canopyHeight[x];
+      if (ch > 0) {
+        const canopyY = terrain[x] - ch;
+        if (!started) { ctx.moveTo(x, canopyY); started = true; }
+        else ctx.lineTo(x, canopyY);
+      } else {
+        started = false;
+      }
     }
     ctx.stroke();
     clearGlow(ctx);
@@ -4094,8 +4910,8 @@ let groundCrewTimer = 0;
 let refuelStage = 0; // 0=refueling, 1=ready
 
 function drawBase() {
-  const levelTheme = getLevelTheme(level);
-  if (levelTheme === 'sea') {
+  const theme = getLevelTheme(level);
+  if (theme === 'sea' || theme === 'normandy') {
     drawCarrier();
     return;
   }
@@ -4584,7 +5400,7 @@ function drawCarrier() {
 // ── Submarine spawning & logic ──
 function spawnSubmarines() {
   submarines = [];
-  if (getLevelTheme(level) !== 'sea') return;
+  if (THEME_CONFIG[getLevelTheme(level)].hasWater !== true) return;
   const count = 1 + Math.floor(level / 2);
   for (let i = 0; i < count; i++) {
     // Spawn in water areas (away from islands and carrier)
@@ -4768,7 +5584,8 @@ function drawSubmarine(sub) {
 
 function spawnSpeedboats() {
   speedboats = [];
-  if (getLevelTheme(level) !== 'sea') return;
+  const tc = THEME_CONFIG[getLevelTheme(level)];
+  if (!tc.hasWater) return;
   const count = 2 + Math.floor(level / 3);
   for (let i = 0; i < count; i++) {
     let sx;
@@ -4933,6 +5750,568 @@ function drawSpeedboat(sb) {
   clearGlow(ctx);
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  CLOUD THEME — Fuel tankers, ace pilots
+// ═══════════════════════════════════════════════════════════════
+
+function spawnFuelTankers() {
+  fuelTankers = [];
+  const tankerX = baseX + 2000 + Math.random() * (WORLD_W - 4000);
+  fuelTankers.push({
+    x: tankerX, y: canvas.height * 0.35,
+    vx: 40, alive: true, hp: 5,
+    dockingProgress: 0, // 0-1, player needs to stay close
+    docking: false
+  });
+}
+
+function updateFuelTankers(dt) {
+  for (const ft of fuelTankers) {
+    if (!ft.alive) continue;
+    ft.x += ft.vx * dt;
+    if (ft.x < 200 || ft.x > WORLD_W - 200) ft.vx *= -1;
+
+    // Check if player is docking (within 50px, same direction)
+    const dx = player.x - ft.x;
+    const dy = player.y - ft.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const sameDir = (player.vx > 0 && ft.vx > 0) || (player.vx < 0 && ft.vx < 0);
+
+    if (dist < 60 && sameDir && !player.landed && !player.burning && state === ST.PLAYING) {
+      ft.docking = true;
+      ft.dockingProgress += dt * 0.25; // ~4 seconds to fully dock
+      if (ft.dockingProgress >= 1) {
+        ft.dockingProgress = 1;
+        // Refuel/rearm player
+        player.fuel = Math.min(MAX_FUEL, player.fuel + dt * 500);
+        player.ammo = Math.min(MAX_AMMO, player.ammo + dt * 50);
+      }
+    } else {
+      ft.docking = false;
+      ft.dockingProgress = Math.max(0, ft.dockingProgress - dt * 0.5);
+    }
+  }
+}
+
+function drawFuelTankers() {
+  for (const ft of fuelTankers) {
+    if (!ft.alive) continue;
+    const sx = ft.x, sy = ft.y;
+    const dir = ft.vx > 0 ? 1 : -1;
+
+    neonGlow(ctx, '#0af', 6);
+    ctx.strokeStyle = '#0af';
+    ctx.lineWidth = 1.5;
+
+    // Fuselage (large transport plane)
+    ctx.beginPath();
+    ctx.ellipse(sx, sy, 30, 8, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Wings
+    ctx.beginPath();
+    ctx.moveTo(sx - 8, sy);
+    ctx.lineTo(sx - 8, sy - 20);
+    ctx.lineTo(sx + 8, sy - 20);
+    ctx.lineTo(sx + 8, sy);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(sx - 8, sy);
+    ctx.lineTo(sx - 8, sy + 20);
+    ctx.lineTo(sx + 8, sy + 20);
+    ctx.lineTo(sx + 8, sy);
+    ctx.stroke();
+
+    // Tail
+    ctx.beginPath();
+    ctx.moveTo(sx - dir * 25, sy);
+    ctx.lineTo(sx - dir * 30, sy - 10);
+    ctx.stroke();
+
+    // FUEL label
+    ctx.fillStyle = '#0af';
+    ctx.font = '7px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('FUEL', sx, sy + 3);
+
+    // Docking progress bar
+    if (ft.dockingProgress > 0) {
+      const barW = 40;
+      const barH = 4;
+      ctx.strokeStyle = '#0ff';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sx - barW / 2, sy - 18, barW, barH);
+      ctx.fillStyle = ft.dockingProgress >= 1 ? '#0f0' : '#0ff';
+      ctx.fillRect(sx - barW / 2, sy - 18, barW * ft.dockingProgress, barH);
+    }
+
+    clearGlow(ctx);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CAVE THEME — Bats, cave turrets
+// ═══════════════════════════════════════════════════════════════
+
+function spawnBats() {
+  bats = [];
+  const numSwarms = 2 + Math.floor(Math.random() * 2);
+  for (let s = 0; s < numSwarms; s++) {
+    const cx = 800 + Math.random() * (WORLD_W - 1600);
+    if (Math.abs(cx - baseX - BASE_WIDTH / 2) < 500) continue;
+    const cy = ceilingTerrain ? (ceilingTerrain[Math.floor(cx)] + terrain[Math.floor(cx)]) / 2 : canvas.height * 0.4;
+    const count = 5 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < count; i++) {
+      bats.push({
+        x: cx + (Math.random() - 0.5) * 60,
+        y: cy + (Math.random() - 0.5) * 40,
+        centerX: cx, centerY: cy,
+        angle: Math.random() * Math.PI * 2,
+        orbitSpeed: 1.5 + Math.random(),
+        orbitRadius: 20 + Math.random() * 30,
+        alive: true, hp: 1,
+        rushing: false, rushTimer: 0
+      });
+    }
+  }
+}
+
+function updateBats(dt) {
+  for (const bat of bats) {
+    if (!bat.alive) continue;
+
+    const dxP = player.x - bat.x;
+    const dyP = player.y - bat.y;
+    const distP = Math.sqrt(dxP * dxP + dyP * dyP);
+
+    // Rush toward player if close
+    if (distP < 200 && !bat.rushing && Math.random() < 0.02) {
+      bat.rushing = true;
+      bat.rushTimer = 1.5;
+    }
+
+    if (bat.rushing) {
+      bat.rushTimer -= dt;
+      bat.x += (dxP / distP) * 180 * dt;
+      bat.y += (dyP / distP) * 180 * dt;
+      if (bat.rushTimer <= 0) {
+        bat.rushing = false;
+        bat.centerX = bat.x;
+        bat.centerY = bat.y;
+      }
+    } else {
+      // Orbit center point
+      bat.angle += bat.orbitSpeed * dt;
+      bat.x = bat.centerX + Math.cos(bat.angle) * bat.orbitRadius;
+      bat.y = bat.centerY + Math.sin(bat.angle) * bat.orbitRadius * 0.6;
+    }
+
+    // Collision with player
+    if (distP < 15 && !player.burning && player.invincible <= 0 && state === ST.PLAYING) {
+      bat.alive = false;
+      addExplosion(bat.x, bat.y, 5, false);
+      damagePlayer(1);
+    }
+  }
+}
+
+function drawBats() {
+  for (const bat of bats) {
+    if (!bat.alive) continue;
+    neonGlow(ctx, '#f80', 4);
+    ctx.strokeStyle = '#fa0';
+    ctx.lineWidth = 1;
+    // Body
+    ctx.fillStyle = '#f80';
+    ctx.fillRect(bat.x - 1, bat.y - 1, 3, 3);
+    // Wings (animated)
+    const wingAngle = Math.sin(Date.now() * 0.02 + bat.angle) * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(bat.x, bat.y);
+    ctx.lineTo(bat.x - 6, bat.y - 4 * wingAngle);
+    ctx.lineTo(bat.x - 8, bat.y + 2 * wingAngle);
+    ctx.moveTo(bat.x, bat.y);
+    ctx.lineTo(bat.x + 6, bat.y - 4 * wingAngle);
+    ctx.lineTo(bat.x + 8, bat.y + 2 * wingAngle);
+    ctx.stroke();
+    clearGlow(ctx);
+  }
+}
+
+function spawnCaveTurrets() {
+  caveTurrets = [];
+  const count = 4 + Math.floor(level / 2);
+  for (let i = 0; i < count; i++) {
+    const tx = 500 + Math.random() * (WORLD_W - 1000);
+    if (Math.abs(tx - baseX - BASE_WIDTH / 2) < 400) continue;
+    const onCeiling = Math.random() < 0.4 && ceilingTerrain;
+    const ty = onCeiling ? getCeilingY(tx) : getTerrainY(tx);
+    caveTurrets.push({
+      x: tx, y: ty,
+      alive: true, hp: 2,
+      onCeiling,
+      fireTimer: Math.random() * 90,
+      isTarget: true
+    });
+    // Register as target building for level completion
+    buildings.push({
+      x: tx - 15, y: onCeiling ? ty : ty - 20, w: 30, h: 20,
+      type: 'flak', hp: 2, alive: true,
+      flakTimer: Math.random() * FLAK_INTERVAL | 0,
+      isTarget: true,
+      _caveTurret: caveTurrets[caveTurrets.length - 1]
+    });
+  }
+}
+
+function updateCaveTurrets(dt) {
+  for (const ct of caveTurrets) {
+    if (!ct.alive) continue;
+    ct.fireTimer -= 1;
+    if (ct.fireTimer <= 0) {
+      ct.fireTimer = 70 + Math.random() * 30;
+      // Shoot toward player
+      const dx = player.x - ct.x;
+      const dy = player.y - ct.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 500 && dist > 30) {
+        const speed = FLAK_SPEED * 0.8;
+        flakShots.push({
+          x: ct.x, y: ct.y + (ct.onCeiling ? 10 : -10),
+          vx: (dx / dist) * speed,
+          vy: (dy / dist) * speed,
+          life: 2
+        });
+      }
+    }
+  }
+}
+
+function drawCaveTurrets() {
+  for (const ct of caveTurrets) {
+    if (!ct.alive) continue;
+    neonGlow(ctx, '#f80', 6);
+    ctx.strokeStyle = '#f80';
+    ctx.lineWidth = 1.5;
+    const dir = ct.onCeiling ? 1 : -1;
+    // Base
+    ctx.strokeRect(ct.x - 8, ct.y - (ct.onCeiling ? 0 : 12), 16, 12);
+    // Barrel pointing toward player
+    const angle = Math.atan2(player.y - ct.y, player.x - ct.x);
+    ctx.beginPath();
+    ctx.moveTo(ct.x, ct.y + dir * 6);
+    ctx.lineTo(ct.x + Math.cos(angle) * 15, ct.y + dir * 6 + Math.sin(angle) * 15);
+    ctx.stroke();
+    clearGlow(ctx);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  NORMANDY THEME — Tanks, barrage balloons
+// ═══════════════════════════════════════════════════════════════
+
+function spawnTanks() {
+  tanks = [];
+  const count = 3 + Math.floor(level / 3);
+  const beachStart = Math.floor(WORLD_W * 0.3);
+  const beachEnd = Math.floor(WORLD_W * 0.75);
+  for (let i = 0; i < count; i++) {
+    const tx = beachStart + Math.random() * (beachEnd - beachStart);
+    const ty = getTerrainY(tx);
+    if (ty >= waterLineY - 5) continue; // skip water
+    tanks.push({
+      x: tx, y: ty,
+      vx: (Math.random() < 0.5 ? 1 : -1) * (15 + Math.random() * 10),
+      alive: true, hp: 3,
+      fireTimer: Math.random() * 60,
+      isTarget: true
+    });
+  }
+}
+
+function updateTanks(dt) {
+  for (const tank of tanks) {
+    if (!tank.alive) continue;
+    tank.x += tank.vx * dt;
+    tank.y = getTerrainY(tank.x);
+
+    // Stay on land
+    if (tank.y >= waterLineY - 5) tank.vx *= -1;
+    if (tank.x < 200 || tank.x > WORLD_W - 200) tank.vx *= -1;
+
+    // Fire flak upward at player
+    tank.fireTimer -= 1;
+    if (tank.fireTimer <= 0) {
+      tank.fireTimer = 50 + Math.random() * 30;
+      const dx = player.x - tank.x;
+      const dy = player.y - tank.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 600 && dist > 30 && player.y < tank.y) {
+        const speed = FLAK_SPEED;
+        flakShots.push({
+          x: tank.x, y: tank.y - 10,
+          vx: (dx / dist) * speed + (Math.random() - 0.5) * 30,
+          vy: (dy / dist) * speed,
+          life: 2
+        });
+      }
+    }
+  }
+}
+
+function drawTanks() {
+  for (const tank of tanks) {
+    if (!tank.alive) continue;
+    const sx = tank.x, sy = tank.y;
+    neonGlow(ctx, '#8a4', 6);
+    ctx.strokeStyle = '#8a4';
+    ctx.lineWidth = 1.5;
+
+    // Treads
+    ctx.strokeRect(sx - 12, sy - 4, 24, 6);
+    // Hull
+    ctx.strokeRect(sx - 8, sy - 8, 16, 5);
+    // Turret
+    ctx.beginPath();
+    ctx.arc(sx, sy - 10, 5, Math.PI, 0);
+    ctx.stroke();
+    // Barrel
+    const angle = Math.atan2(player.y - sy, player.x - sx);
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - 12);
+    ctx.lineTo(sx + Math.cos(angle) * 14, sy - 12 + Math.sin(angle) * 14);
+    ctx.stroke();
+
+    // HP dots
+    if (tank.hp > 1) {
+      ctx.fillStyle = '#8a4';
+      ctx.font = '7px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('●'.repeat(tank.hp), sx, sy - 18);
+    }
+    clearGlow(ctx);
+  }
+}
+
+function spawnBarrageBalloons() {
+  barrageBalloons = [];
+  const count = 3 + Math.floor(level / 4);
+  const beachStart = Math.floor(WORLD_W * 0.25);
+  const beachEnd = Math.floor(WORLD_W * 0.8);
+  for (let i = 0; i < count; i++) {
+    const bx = beachStart + (beachEnd - beachStart) * ((i + 0.5) / count);
+    const groundY = getTerrainY(bx);
+    if (groundY >= waterLineY - 5) continue;
+    barrageBalloons.push({
+      x: bx, y: groundY - 150 - Math.random() * 100,
+      groundY,
+      alive: true, hp: 2,
+      sway: Math.random() * Math.PI * 2
+    });
+  }
+}
+
+function updateBarrageBalloons(dt) {
+  for (const bb of barrageBalloons) {
+    if (!bb.alive) continue;
+    bb.sway += dt;
+    bb.x += Math.sin(bb.sway * 0.5) * 0.3;
+
+    // Cable collision with player
+    if (!player.burning && player.invincible <= 0 && state === ST.PLAYING) {
+      const cableX = bb.x + Math.sin(bb.sway * 0.5) * 5;
+      if (Math.abs(player.x - cableX) < 8 && player.y > bb.y && player.y < bb.groundY) {
+        damagePlayer(2);
+        addExplosion(player.x, player.y, 10, false);
+      }
+    }
+
+    // Balloon collision with bullets
+    // (handled in bullet update loop)
+  }
+}
+
+function drawBarrageBalloons() {
+  for (const bb of barrageBalloons) {
+    if (!bb.alive) continue;
+    const sx = bb.x, sy = bb.y;
+    const swayOff = Math.sin(bb.sway * 0.5) * 5;
+
+    neonGlow(ctx, '#cc9', 6);
+    ctx.strokeStyle = '#aa8';
+    ctx.lineWidth = 1;
+
+    // Cable from ground to balloon
+    ctx.beginPath();
+    ctx.moveTo(sx + swayOff * 0.3, bb.groundY);
+    ctx.lineTo(sx + swayOff, sy + 12);
+    ctx.stroke();
+
+    // Balloon body
+    ctx.strokeStyle = '#cc9';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.ellipse(sx + swayOff, sy, 10, 15, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Fins
+    ctx.beginPath();
+    ctx.moveTo(sx + swayOff - 6, sy + 12);
+    ctx.lineTo(sx + swayOff - 10, sy + 18);
+    ctx.moveTo(sx + swayOff + 6, sy + 12);
+    ctx.lineTo(sx + swayOff + 10, sy + 18);
+    ctx.stroke();
+
+    clearGlow(ctx);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  FOREST THEME — AA guns, trains
+// ═══════════════════════════════════════════════════════════════
+
+function spawnAAGuns() {
+  aaGuns = [];
+  const count = 4 + Math.floor(level / 3);
+  for (let i = 0; i < count; i++) {
+    const ax = 500 + Math.random() * (WORLD_W - 1000);
+    if (Math.abs(ax - baseX - BASE_WIDTH / 2) < 400) continue;
+    const ty = getTerrainY(ax);
+    aaGuns.push({
+      x: ax, y: ty,
+      alive: true, hp: 2,
+      hidden: true,
+      revealTimer: 0,
+      fireTimer: Math.random() * 80,
+      isTarget: true
+    });
+  }
+}
+
+function updateAAGuns(dt) {
+  for (const aa of aaGuns) {
+    if (!aa.alive) continue;
+
+    if (aa.revealTimer > 0) {
+      aa.revealTimer -= dt;
+      if (aa.revealTimer <= 0) aa.hidden = true;
+    }
+
+    aa.fireTimer -= 1;
+    if (aa.fireTimer <= 0) {
+      aa.fireTimer = 60 + Math.random() * 40;
+      const dx = player.x - aa.x;
+      const dy = player.y - aa.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 500 && dist > 30) {
+        aa.hidden = false;
+        aa.revealTimer = 2;
+        const speed = FLAK_SPEED;
+        flakShots.push({
+          x: aa.x, y: aa.y - 10,
+          vx: (dx / dist) * speed + (Math.random() - 0.5) * 20,
+          vy: (dy / dist) * speed,
+          life: 2
+        });
+      }
+    }
+  }
+}
+
+function drawAAGuns() {
+  for (const aa of aaGuns) {
+    if (!aa.alive || aa.hidden) continue;
+    const sx = aa.x, sy = aa.y;
+    neonGlow(ctx, '#0f0', 6);
+    ctx.strokeStyle = '#0a0';
+    ctx.lineWidth = 1.5;
+    // Base
+    ctx.strokeRect(sx - 8, sy - 8, 16, 8);
+    // Barrel
+    const angle = Math.atan2(player.y - sy, player.x - sx);
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - 8);
+    ctx.lineTo(sx + Math.cos(angle) * 15, sy - 8 + Math.sin(angle) * 15);
+    ctx.stroke();
+    clearGlow(ctx);
+  }
+}
+
+function spawnTrains() {
+  trains = [];
+  // Find flat track sections
+  for (let x = 1000; x < WORLD_W - 1000; x += 100) {
+    if (Math.abs(x - baseX) < 500) continue;
+    // Check for flat section (track)
+    const y1 = getTerrainY(x);
+    const y2 = getTerrainY(x + 200);
+    if (Math.abs(y1 - y2) < 3 && canopyHeight && canopyHeight[Math.floor(x)] === 0) {
+      trains.push({
+        x, y: y1,
+        vx: 30, alive: true, hp: 6,
+        segments: 4, segmentWidth: 25,
+        trackStart: x - 100, trackEnd: x + 500
+      });
+      x += 3000; // space trains out
+    }
+  }
+}
+
+function updateTrains(dt) {
+  for (const tr of trains) {
+    if (!tr.alive) continue;
+    tr.x += tr.vx * dt;
+    tr.y = getTerrainY(tr.x);
+
+    // Reverse at track ends
+    if (tr.x <= tr.trackStart || tr.x >= tr.trackEnd) tr.vx *= -1;
+  }
+}
+
+function drawTrains() {
+  for (const tr of trains) {
+    if (!tr.alive) continue;
+    const dir = tr.vx > 0 ? 1 : -1;
+    neonGlow(ctx, '#ff0', 6);
+
+    for (let s = 0; s < tr.segments; s++) {
+      const sx = tr.x - dir * s * (tr.segmentWidth + 3);
+      const sy = tr.y;
+
+      if (s === 0) {
+        // Engine
+        ctx.strokeStyle = '#ff0';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(sx - 12, sy - 12, 24, 12);
+        // Smokestack
+        ctx.strokeRect(sx + dir * 6, sy - 16, 5, 4);
+        // Smoke
+        if (Math.random() < 0.1) {
+          addParticle(sx + dir * 8, sy - 16, dir * 10 + (Math.random() - 0.5) * 10, -15, 0.5, '#555', 2);
+        }
+      } else {
+        // Cargo car
+        ctx.strokeStyle = '#aa0';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(sx - 10, sy - 10, 20, 10);
+      }
+      // Wheels
+      ctx.fillStyle = '#880';
+      ctx.fillRect(sx - 8, sy - 2, 4, 3);
+      ctx.fillRect(sx + 4, sy - 2, 4, 3);
+    }
+
+    // HP
+    if (tr.hp > 1) {
+      ctx.fillStyle = '#ff0';
+      ctx.font = '7px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('●'.repeat(Math.min(tr.hp, 6)), tr.x, tr.y - 22);
+    }
+    clearGlow(ctx);
+  }
+}
+
 function drawBuilding(bld) {
   const col = buildingColors[bld.type] || '#fa0';
   neonGlow(ctx, col, 8);
@@ -5029,6 +6408,40 @@ function drawBuilding(bld) {
     ctx.moveTo(bld.x + 5, bld.y + 5);
     ctx.lineTo(bld.x + bld.w - 5, bld.y + 5);
     ctx.stroke();
+  } else if (bld.type === 'heavyBunker') {
+    // Double-thick rounded top
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(bld.x + bld.w / 2, bld.y, bld.w / 2, Math.PI, 0);
+    ctx.stroke();
+    ctx.lineWidth = 1.5;
+    // Double gun slit
+    ctx.beginPath();
+    ctx.moveTo(bld.x + 5, bld.y + 5);
+    ctx.lineTo(bld.x + bld.w - 5, bld.y + 5);
+    ctx.moveTo(bld.x + 5, bld.y + 10);
+    ctx.lineTo(bld.x + bld.w - 5, bld.y + 10);
+    ctx.stroke();
+    // Flak barrel on top
+    ctx.beginPath();
+    ctx.moveTo(bld.x + bld.w / 2, bld.y - bld.w / 2 + 5);
+    ctx.lineTo(bld.x + bld.w / 2, bld.y - bld.w / 2 - 8);
+    ctx.stroke();
+  } else if (bld.type === 'observation_tower') {
+    // Tall narrow tower
+    ctx.strokeRect(bld.x + 4, bld.y + 15, 12, bld.h - 15);
+    // Wider observation room at top
+    ctx.strokeRect(bld.x, bld.y, bld.w, 15);
+    // Antenna
+    ctx.beginPath();
+    ctx.moveTo(bld.x + bld.w / 2, bld.y);
+    ctx.lineTo(bld.x + bld.w / 2, bld.y - 12);
+    ctx.stroke();
+    // Rotating dish
+    const angle = (Date.now() * 0.004) % (Math.PI * 2);
+    ctx.beginPath();
+    ctx.arc(bld.x + bld.w / 2, bld.y - 12, 6, angle, angle + Math.PI * 0.5);
+    ctx.stroke();
   }
 
   // HP indicator
@@ -5114,6 +6527,27 @@ function drawTitle(W, H) {
   }
   ctx.globalAlpha = 1;
 
+  // All-time medals display
+  if (allTimeMedals.size > 0) {
+    ctx.font = `${Math.min(10, W * 0.015)}px "Courier New", monospace`;
+    ctx.fillStyle = '#556';
+    ctx.fillText('DECORATIONS', W / 2, H * 0.48);
+    let mi = 0;
+    const medalArr = [...allTimeMedals];
+    const medalW = Math.min(W * 0.7, medalArr.length * 100);
+    const startMX = W / 2 - medalW / 2 + 50;
+    for (const key of medalArr) {
+      const m = MEDALS[key];
+      neonGlow(ctx, m.color, 4);
+      ctx.fillStyle = m.color;
+      ctx.font = `${Math.min(9, W * 0.013)}px "Courier New", monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText(`${m.icon} ${m.name}`, startMX + mi * 100, H * 0.48 + 14);
+      mi++;
+    }
+    clearGlow(ctx);
+  }
+
   // Blinking "Press ENTER"
   if (Math.sin(Date.now() * 0.004) > 0) {
     neonGlow(ctx, '#fff', 8);
@@ -5163,8 +6597,8 @@ function drawRadar() {
   const scale = rW / WORLD_W;
 
   // Terrain silhouette
-  const isSea = getLevelTheme(level) === 'sea';
-  rctx.strokeStyle = isSea ? '#05a' : '#0a3';
+  const tc = THEME_CONFIG[getLevelTheme(level)];
+  rctx.strokeStyle = tc.hasWater ? '#05a' : (tc.terrainColor === '#f80' ? '#840' : '#0a3');
   rctx.lineWidth = 1;
   rctx.beginPath();
   for (let x = 0; x < WORLD_W; x += 20) {
@@ -5214,6 +6648,33 @@ function drawRadar() {
     if (!sb.alive) continue;
     rctx.fillStyle = '#0f0';
     rctx.fillRect(sb.x * scale - 1, rH * 0.6, 3, 2);
+  }
+
+  // Theme-specific radar blips
+  for (const ft of fuelTankers) {
+    if (!ft.alive) continue;
+    rctx.fillStyle = '#0af';
+    rctx.fillRect(ft.x * scale - 2, ft.y * scale * 0.05 + 5, 5, 3);
+  }
+  for (const tank of tanks) {
+    if (!tank.alive) continue;
+    rctx.fillStyle = '#8a4';
+    rctx.fillRect(tank.x * scale - 1, rH * 0.5, 3, 3);
+  }
+  for (const bb of barrageBalloons) {
+    if (!bb.alive) continue;
+    rctx.fillStyle = '#cc9';
+    rctx.fillRect(bb.x * scale - 1, bb.y * scale * 0.05 + 5, 3, 3);
+  }
+  for (const aa of aaGuns) {
+    if (!aa.alive) continue;
+    rctx.fillStyle = aa.hidden ? 'rgba(0,160,0,0.2)' : '#0f0';
+    rctx.fillRect(aa.x * scale - 1, rH * 0.5, 3, 3);
+  }
+  for (const tr of trains) {
+    if (!tr.alive) continue;
+    rctx.fillStyle = '#ff0';
+    rctx.fillRect(tr.x * scale - 2, rH * 0.5, 5, 3);
   }
 
   // Player
@@ -5542,6 +7003,33 @@ function drawRadarScope(W, H) {
     }
   }
 
+  // ── Theme-specific entities on scope ──
+  for (const ft of fuelTankers) {
+    if (!ft.alive) continue;
+    const p = toScope(ft.x, ft.y);
+    if (p) { ctx.fillStyle = '#0af'; ctx.fillRect(p.x - 3, p.y - 1.5, 6, 3); }
+  }
+  for (const tank of tanks) {
+    if (!tank.alive) continue;
+    const p = toScope(tank.x, tank.y);
+    if (p) drawSquareBlip(p.x, p.y, '#8a4', 2);
+  }
+  for (const bb of barrageBalloons) {
+    if (!bb.alive) continue;
+    const p = toScope(bb.x, bb.y);
+    if (p) drawDiamondBlip(p.x, p.y, '#cc9', 2);
+  }
+  for (const tr of trains) {
+    if (!tr.alive) continue;
+    const p = toScope(tr.x, tr.y);
+    if (p) { ctx.fillStyle = '#ff0'; ctx.fillRect(p.x - 3, p.y - 1, 6, 2); }
+  }
+  for (const aa of aaGuns) {
+    if (!aa.alive) continue;
+    const p = toScope(aa.x, aa.y);
+    if (p) drawSquareBlip(p.x, p.y, aa.hidden ? 'rgba(0,160,0,0.2)' : '#0f0', 1.5);
+  }
+
   // ── Buildings (all types — small squares, color-coded) ──
   for (const bld of buildings) {
     if (!bld.alive) continue;
@@ -5657,6 +7145,8 @@ function handleInput() {
       level = 1;
       score = 0;
       lives = 5;
+      earnedMedals = new Set();
+      flightStats = { kills: 0, damageTaken: 0, valour: 0 };
       initLevel();
       state = ST.PLAYING;
       if (touchStartBtn) touchStartBtn.classList.remove('visible');
@@ -5671,6 +7161,8 @@ function handleInput() {
       level = highestLevel;
       score = 0;
       lives = 5;
+      earnedMedals = new Set();
+      flightStats = { kills: 0, damageTaken: 0, valour: 0 };
       initLevel();
       state = ST.PLAYING;
       if (touchStartBtn) touchStartBtn.classList.remove('visible');
