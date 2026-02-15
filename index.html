@@ -575,54 +575,16 @@ function addBarrierMountains(groundBase) {
 }
 
 // ── Cloud terrain ──
+// Pure sky level — no ground, no base. Player starts airborne.
 function generateCloudTerrain(groundBase) {
-  const cloudBase = canvas.height * 0.78;
-  // Mostly flat cloud layer with mountain peaks poking through
+  // Push terrain far below screen — unreachable death zone
+  const deathFloor = canvas.height + 500;
   for (let x = 0; x < WORLD_W; x++) {
-    terrain[x] = cloudBase;
-  }
-
-  // Mountain peaks sticking above the cloud layer (8-12 peaks)
-  const numPeaks = 8 + Math.floor(Math.random() * 5);
-  const spacing = WORLD_W / (numPeaks + 2);
-  islandPeaks = []; // reuse for building placement
-  for (let i = 0; i < numPeaks; i++) {
-    let peakX, attempts = 0;
-    do {
-      peakX = Math.floor(spacing * (i + 1) + (Math.random() - 0.5) * spacing * 0.5);
-      attempts++;
-    } while (attempts < 20 && Math.abs(peakX - baseX - BASE_WIDTH / 2) < 600);
-    if (Math.abs(peakX - baseX - BASE_WIDTH / 2) < 600) continue; // skip this peak
-
-    const peakWidth = 150 + Math.floor(Math.random() * 200);
-    const peakHeight = 40 + Math.random() * 50;
-    islandPeaks.push({ cx: peakX, w: peakWidth, h: peakHeight });
-
-    for (let dx = -peakWidth / 2; dx <= peakWidth / 2; dx++) {
-      const ix = Math.floor(((peakX + dx) % WORLD_W + WORLD_W) % WORLD_W);
-      const factor = Math.cos((dx / (peakWidth / 2)) * Math.PI * 0.5);
-      const noise = Math.sin(ix * 0.02) * 5;
-      terrain[ix] = Math.min(terrain[ix], cloudBase - peakHeight * factor * factor + noise);
-    }
-  }
-
-  // Flat base on mountain peak
-  const basePeakHeight = 30;
-  for (let dx = -200; dx <= BASE_WIDTH + 200; dx++) {
-    const ix = ((baseX + dx) % WORLD_W + WORLD_W) % WORLD_W;
-    const factor = Math.cos((dx / 200) * Math.PI * 0.5);
-    terrain[ix] = Math.min(terrain[ix], cloudBase - basePeakHeight * factor * factor);
-  }
-  const flatY = cloudBase - basePeakHeight;
-  for (let x = baseX - 80; x < baseX + BASE_WIDTH + 80; x++) {
-    if (x >= 0 && x < WORLD_W) {
-      if (x >= baseX && x <= baseX + BASE_WIDTH) terrain[x] = flatY;
-      else if (x < baseX) terrain[x] = flatY * (1 - (baseX - x) / 80) + terrain[x] * ((baseX - x) / 80);
-      else terrain[x] = flatY * (1 - (x - baseX - BASE_WIDTH) / 80) + terrain[x] * ((x - baseX - BASE_WIDTH) / 80);
-    }
+    terrain[x] = deathFloor;
   }
   waterLineY = 0;
-  addBarrierMountains(cloudBase - 60);
+  islandPeaks = [];
+  // No barrier mountains, no base flattening — pure open sky
 }
 
 // ── Cave terrain ──
@@ -842,18 +804,20 @@ let fleeingPeople, dragons;
 let shockwaves = []; // underwater depth charge shockwaves
 
 function initPlayer() {
+  const isCloud = getLevelTheme(level) === 'cloud';
   const ty = getTerrainY(baseX + BASE_WIDTH / 2);
   player = {
-    x: baseX + BASE_WIDTH / 2,
-    y: ty - 30,
+    x: isCloud ? WORLD_W / 2 : baseX + BASE_WIDTH / 2,
+    y: isCloud ? canvas.height * 0.3 : ty - 30,
     // Sopwith-style: single speed scalar + angle index
-    speed: 0,             // current speed (in Sopwith units)
-    accel: 0,             // throttle acceleration (0 to PLANE_MAX_ACCEL)
+    speed: isCloud ? PLANE_MAX_SPEED : 0,
+    accel: isCloud ? PLANE_MAX_ACCEL : 0,
     angleIdx: 0,          // 0=right, 4=up, 8=left, 12=down (16 steps)
     orient: false,        // upside-down (true = inverted, like ob_orient in original Sopwith)
     stalled: false,       // in stall state
     // Derived velocity (for rendering/collision)
-    vx: 0, vy: 0,
+    vx: isCloud ? PLANE_MAX_SPEED : 0,
+    vy: 0,
     fuel: MAX_FUEL,
     ammo: MAX_AMMO,
     bombCount: MAX_BOMBS,
@@ -861,8 +825,8 @@ function initPlayer() {
     fireCooldown: 0,
     bombCooldown: 0,
     depthChargeCooldown: 0,
-    invincible: 0,
-    landed: true,
+    invincible: isCloud ? 2 : 0, // brief invincibility on cloud spawn
+    landed: !isCloud,     // cloud: start airborne
     autopilot: false,
     hp: PLAYER_MAX_HP,
     wounded: false,        // damaged but flyable — controls respond every other frame
@@ -1028,6 +992,24 @@ function spawnEnemyBases() {
       }
     }
     flattenTerrainForBase(bx);
+    // Cave: open up ceiling at enemy bases so player can turn
+    if (theme === 'cave' && ceilingTerrain) {
+      const chamberStart = bx - 200;
+      const chamberEnd = bx + BASE_WIDTH + 200;
+      const floorY = getTerrainY(bx + BASE_WIDTH / 2);
+      const ceilY = floorY - 380;
+      for (let x = Math.max(0, chamberStart - 80); x < Math.min(WORLD_W, chamberEnd + 80); x++) {
+        if (x >= chamberStart && x <= chamberEnd) {
+          ceilingTerrain[x] = Math.min(ceilingTerrain[x], ceilY);
+        } else if (x < chamberStart) {
+          const t = (chamberStart - x) / 80;
+          ceilingTerrain[x] = Math.min(ceilingTerrain[x], ceilY * (1 - t) + ceilingTerrain[x] * t);
+        } else {
+          const t = (x - chamberEnd) / 80;
+          ceilingTerrain[x] = Math.min(ceilingTerrain[x], ceilY * (1 - t) + ceilingTerrain[x] * t);
+        }
+      }
+    }
     enemyBases.push({ x: bx, width: BASE_WIDTH });
   }
 }
@@ -1200,6 +1182,47 @@ function launchNextFromBases() {
   }
 }
 
+// Cloud theme: all enemies start airborne, no bases needed
+function spawnCloudEnemies() {
+  enemies = [];
+  enemyBases = [];
+  const count = 5 + level * 2; // more enemies since there are no buildings
+  for (let i = 0; i < count; i++) {
+    let type = 'biplane';
+    const r = Math.random();
+    if (r < 0.30) type = 'ace';
+    else if (r < 0.45) type = 'jet';
+    else if (r < 0.55) type = 'bomber';
+
+    const spec = ENEMY_SPECS[type];
+    const ex = 500 + Math.random() * (WORLD_W - 1000);
+    const ey = 80 + Math.random() * (canvas.height * 0.5);
+    const facesRight = Math.random() < 0.5;
+
+    enemies.push({
+      x: ex, y: ey,
+      vx: facesRight ? spec.speed : -spec.speed,
+      vy: 0,
+      angle: facesRight ? 0 : Math.PI,
+      hp: spec.hp, alive: true,
+      fireTimer: Math.random() * spec.fireInterval | 0,
+      type,
+      speed: spec.speed,
+      stalled: false,
+      stallTimer: 0,
+      burning: false,
+      burnTimer: 0,
+      patrolDir: facesRight ? 1 : -1,
+      parkSlot: i,
+      fuel: ENEMY_MAX_FUEL,
+      landed: false,
+      homeBase: null,
+      takeoffTimer: 0,
+      state: 'flying'
+    });
+  }
+}
+
 function spawnAnimals() {
   oxen = [];
   const count = 3 + level;
@@ -1297,11 +1320,23 @@ function initLevel() {
   aaGuns = [];
   trains = [];
   enemyAccuracyDebuff = 0;
-  spawnBuildings();
-  spawnEnemies();
 
   const theme = getLevelTheme(level);
   const tc = THEME_CONFIG[theme];
+
+  if (theme === 'cloud') {
+    // Cloud: pure air combat — no buildings, no ground entities
+    buildings = [];
+    oxen = [];
+    speedboats = [];
+    submarines = [];
+    spawnCloudEnemies();
+    spawnFuelTankers();
+    return; // skip all ground-based spawning
+  }
+
+  spawnBuildings();
+  spawnEnemies();
 
   // Animals only on ground-based themes without water
   if (theme === 'land' || theme === 'forest') {
@@ -1324,9 +1359,7 @@ function initLevel() {
   }
 
   // Theme-specific spawns
-  if (theme === 'cloud') {
-    spawnFuelTankers();
-  } else if (theme === 'cave') {
+  if (theme === 'cave') {
     spawnBats();
     spawnCaveTurrets();
   } else if (theme === 'normandy') {
@@ -2152,6 +2185,26 @@ function update(dt) {
         }
       }
     }
+    // Player crashes into submarines (when surfaced)
+    if (!player.landed && !player.burning && player.invincible <= 0) {
+      for (const sub of submarines) {
+        if (!sub.alive || sub.phase === 'submerged') continue;
+        if (Math.abs(player.x - sub.x) < 40 && Math.abs(player.y - sub.y) < 15) {
+          sub.alive = false; addExplosion(sub.x, sub.y, 35, true); playBoom(true);
+          score += 400; damagePlayer(2); break;
+        }
+      }
+    }
+    // Player crashes into speedboats
+    if (!player.landed && !player.burning && player.invincible <= 0) {
+      for (const sb of speedboats) {
+        if (!sb.alive) continue;
+        if (Math.abs(player.x - sb.x) < 20 && Math.abs(player.y - sb.y) < 12) {
+          sb.alive = false; addExplosion(sb.x, sb.y, 20, true); playBoom(true);
+          score += 200; damagePlayer(1); break;
+        }
+      }
+    }
     // Player crashes into buildings — both destroyed
     if (!player.landed && !player.burning && player.invincible <= 0) {
       for (const bld of buildings) {
@@ -2572,10 +2625,16 @@ function updatePlayer(dt) {
       }
     }
 
+    // Cloud: no ground — die if falling below cloud layer
+    if (getLevelTheme(level) === 'cloud' && p.y >= canvas.height * 0.85) {
+      killPlayer();
+      return;
+    }
+
     // Ground collision
     const groundY = getTerrainY(p.x);
     if (p.y >= groundY - 8) {
-      const nearBase = p.x > baseX - 30 && p.x < baseX + BASE_WIDTH + 30;
+      const nearBase = getLevelTheme(level) !== 'cloud' && p.x > baseX - 30 && p.x < baseX + BASE_WIDTH + 30;
       // Level = angleIdx near 0 (rightward: 0,1,15) or near 8 (leftward: 7,8,9)
       const levelEnough = (p.angleIdx <= 1 || p.angleIdx >= 15 || (p.angleIdx >= 7 && p.angleIdx <= 9));
       const slowEnough = p.speed <= PLANE_MIN_SPEED + 2;
@@ -3469,11 +3528,11 @@ function updateEnemies(dt) {
       const playerSafe = player.invincible > 0 || player.landed;
       let dist;
 
-      // Consume fuel
-      en.fuel -= dt * 20;
+      // Consume fuel (cloud enemies have infinite fuel — no base to return to)
+      if (en.homeBase) en.fuel -= dt * 20;
 
-      // Switch to returning when fuel low
-      if (en.fuel < 150 && en.state === 'flying') {
+      // Switch to returning when fuel low (not on cloud — no base to return to)
+      if (en.fuel < 150 && en.state === 'flying' && en.homeBase) {
         en.state = 'returning';
       }
 
@@ -3852,12 +3911,23 @@ function updateDragons(dt) {
 }
 
 function checkLevelComplete() {
-  const targets = buildings.filter(b => b.isTarget && b.alive);
-  // Theme-specific targets
-  const themeTgts = tanks.filter(t => t.alive).length +
-    trains.filter(t => t.alive).length +
-    aaGuns.filter(a => a.alive).length;
-  if (targets.length === 0 && themeTgts === 0) {
+  const theme = getLevelTheme(level);
+  let complete = false;
+
+  if (theme === 'cloud') {
+    // Cloud: kill all enemy aircraft to complete
+    const aliveEnemies = enemies.filter(e => e.alive).length;
+    complete = aliveEnemies === 0;
+  } else {
+    const targets = buildings.filter(b => b.isTarget && b.alive);
+    // Theme-specific targets
+    const themeTgts = tanks.filter(t => t.alive).length +
+      trains.filter(t => t.alive).length +
+      aaGuns.filter(a => a.alive).length;
+    complete = targets.length === 0 && themeTgts === 0;
+  }
+
+  if (complete) {
     state = ST.LEVEL_COMPLETE;
     levelTimer = 3;
     score += 1000 * level;
@@ -3976,12 +4046,13 @@ function draw() {
   // Terrain
   drawTerrain(W, H);
 
-  // Home base
-  drawBase();
-  drawSearchlights();
-
-  // Enemy airfields
-  drawEnemyBases();
+  // Home base (skip on cloud — no ground)
+  const drawThemeNow = getLevelTheme(level);
+  if (drawThemeNow !== 'cloud') {
+    drawBase();
+    drawSearchlights();
+    drawEnemyBases();
+  }
 
   // Buildings
   for (const bld of buildings) {
@@ -4639,6 +4710,12 @@ function drawTerrain(W, H) {
   const tc = THEME_CONFIG[theme];
   const hasWater = tc.hasWater === true || tc.hasWater === 'partial';
 
+  // Cloud: no ground, just draw cloud layer and return
+  if (theme === 'cloud') {
+    drawCloudTerrainLine(startX, endX, tc);
+    return;
+  }
+
   // Filled terrain
   ctx.fillStyle = tc.bg;
   ctx.beginPath();
@@ -4751,25 +4828,29 @@ function drawStandardTerrainLine(startX, endX, tc) {
 }
 
 function drawCloudTerrainLine(startX, endX, tc) {
-  // Draw mountain peaks above clouds
-  neonGlow(ctx, tc.glow, 8);
-  ctx.strokeStyle = tc.terrainColor;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (let x = startX; x <= endX; x += 2) {
-    if (x === startX) ctx.moveTo(x, terrain[x]);
-    else ctx.lineTo(x, terrain[x]);
-  }
-  ctx.stroke();
-  clearGlow(ctx);
+  // Pure sky — multiple cloud layers at different depths
+  const now = Date.now();
 
-  // Cloud layer — fluffy semi-transparent
+  // Far cloud layer (slow, faint)
+  const farCloudY = canvas.height * 0.82;
+  ctx.fillStyle = 'rgba(150, 160, 190, 0.06)';
+  ctx.beginPath();
+  ctx.moveTo(startX, farCloudY + 80);
+  for (let x = startX; x <= endX; x += 6) {
+    const cy = farCloudY + Math.sin(x * 0.004 + now * 0.0002) * 20 + Math.sin(x * 0.012 + 2.1) * 10;
+    ctx.lineTo(x, cy);
+  }
+  ctx.lineTo(endX, farCloudY + 80);
+  ctx.closePath();
+  ctx.fill();
+
+  // Main cloud layer — the death zone boundary
   const cloudY = canvas.height * 0.75;
-  ctx.fillStyle = 'rgba(200, 210, 230, 0.12)';
+  ctx.fillStyle = 'rgba(200, 210, 230, 0.10)';
   ctx.beginPath();
   ctx.moveTo(startX, cloudY + 60);
   for (let x = startX; x <= endX; x += 4) {
-    const cy = cloudY + Math.sin(x * 0.008 + Date.now() * 0.0005) * 15 + Math.sin(x * 0.02) * 8;
+    const cy = cloudY + Math.sin(x * 0.008 + now * 0.0005) * 15 + Math.sin(x * 0.02) * 8;
     ctx.lineTo(x, cy);
   }
   ctx.lineTo(endX, cloudY + 60);
@@ -4777,15 +4858,29 @@ function drawCloudTerrainLine(startX, endX, tc) {
   ctx.fill();
 
   // Cloud top edge glow
-  ctx.strokeStyle = 'rgba(180, 190, 220, 0.4)';
+  ctx.strokeStyle = 'rgba(180, 190, 220, 0.35)';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   for (let x = startX; x <= endX; x += 4) {
-    const cy = cloudY + Math.sin(x * 0.008 + Date.now() * 0.0005) * 15 + Math.sin(x * 0.02) * 8;
+    const cy = cloudY + Math.sin(x * 0.008 + now * 0.0005) * 15 + Math.sin(x * 0.02) * 8;
     if (x === startX) ctx.moveTo(x, cy);
     else ctx.lineTo(x, cy);
   }
   ctx.stroke();
+
+  // Wispy high clouds (subtle, above player)
+  ctx.strokeStyle = 'rgba(160, 170, 200, 0.12)';
+  ctx.lineWidth = 0.5;
+  for (let layer = 0; layer < 3; layer++) {
+    const wy = 60 + layer * 80;
+    ctx.beginPath();
+    for (let x = startX; x <= endX; x += 8) {
+      const cy = wy + Math.sin(x * 0.003 + layer * 2.3 + now * 0.0001) * 12;
+      if (x === startX) ctx.moveTo(x, cy);
+      else ctx.lineTo(x, cy);
+    }
+    ctx.stroke();
+  }
 }
 
 function drawCaveTerrainLine(startX, endX, terrainBottom, tc) {
@@ -5756,13 +5851,18 @@ function drawSpeedboat(sb) {
 
 function spawnFuelTankers() {
   fuelTankers = [];
-  const tankerX = baseX + 2000 + Math.random() * (WORLD_W - 4000);
-  fuelTankers.push({
-    x: tankerX, y: canvas.height * 0.35,
-    vx: 40, alive: true, hp: 5,
-    dockingProgress: 0, // 0-1, player needs to stay close
-    docking: false
-  });
+  // Spawn 2-3 tankers spread across the world
+  const count = 2 + Math.floor(Math.random() * 2);
+  const spacing = WORLD_W / (count + 1);
+  for (let i = 0; i < count; i++) {
+    const tankerX = spacing * (i + 1) + (Math.random() - 0.5) * spacing * 0.4;
+    fuelTankers.push({
+      x: tankerX, y: 100 + Math.random() * (canvas.height * 0.3),
+      vx: 30 + Math.random() * 20, alive: true, hp: 5,
+      dockingProgress: 0, // 0-1, player needs to stay close
+      docking: false
+    });
+  }
 }
 
 function updateFuelTankers(dt) {
@@ -5782,9 +5882,14 @@ function updateFuelTankers(dt) {
       ft.dockingProgress += dt * 0.25; // ~4 seconds to fully dock
       if (ft.dockingProgress >= 1) {
         ft.dockingProgress = 1;
-        // Refuel/rearm player
+        // Refuel/rearm/repair player — only resupply on cloud theme
         player.fuel = Math.min(MAX_FUEL, player.fuel + dt * 500);
         player.ammo = Math.min(MAX_AMMO, player.ammo + dt * 50);
+        player.bombCount = Math.min(MAX_BOMBS, player.bombCount + dt * 2);
+        if (player.hp < PLAYER_MAX_HP) {
+          player.hp = Math.min(PLAYER_MAX_HP, player.hp + dt * 0.5);
+          player.wounded = player.hp <= 1;
+        }
       }
     } else {
       ft.docking = false;
