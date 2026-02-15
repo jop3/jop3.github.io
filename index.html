@@ -178,6 +178,7 @@ const PROJ_GRAVITY = 300;     // Gravity for projectiles (pixels/s²)
 const ST = { TITLE: 0, PLAYING: 1, DYING: 2, GAME_OVER: 3, LEVEL_COMPLETE: 4 };
 let state = ST.TITLE;
 let level = 1;
+let highestLevel = 1; // highest level reached (for continue)
 let score = 0;
 let lives = 5;
 let deathTimer = 0;
@@ -534,6 +535,7 @@ function isInBaseTerritory(x) {
 // ── Entities ──
 let player, bullets, bombs, depthCharges, particles, enemies, buildings, flakShots, birds, oxen;
 let fleeingPeople, dragons;
+let shockwaves = []; // underwater depth charge shockwaves
 
 function initPlayer() {
   const ty = getTerrainY(baseX + BASE_WIDTH / 2);
@@ -945,6 +947,7 @@ function initLevel() {
   bullets = [];
   bombs = [];
   depthCharges = [];
+  shockwaves = [];
   particles = [];
   flakShots = [];
   fleeingPeople = [];
@@ -1741,6 +1744,7 @@ function update(dt) {
     updateBullets(dt);
     updateBombs(dt);
     updateDepthCharges(dt);
+    updateShockwaves(dt);
     updateEnemies(dt);
     updateFlak(dt);
     updateBirds(dt);
@@ -1794,6 +1798,7 @@ function update(dt) {
     levelTimer -= dt;
     if (levelTimer <= 0) {
       level++;
+      if (level > highestLevel) highestLevel = level;
       initLevel();
       state = ST.PLAYING;
     }
@@ -2549,114 +2554,101 @@ function updateDepthCharges(dt) {
       dc.vx *= 0.95;
     }
 
+    // Detonate on terrain contact or when deep enough
     let hit = false;
-
-    // Hit submarines — works at ANY depth (the whole point)
-    for (const sub of submarines) {
-      if (!sub.alive) continue;
-      if (Math.abs(dc.x - sub.x) < 60 && Math.abs(dc.y - sub.y) < 25) {
-        sub.hp -= 3; // depth charges are devastating
-        addExplosion(dc.x, dc.y, 20, false);
-        if (sub.hp <= 0) {
-          sub.alive = false;
-          addExplosion(sub.x, sub.y, 40, true);
-          playBoom(true);
-          score += 800;
-        }
-        hit = true;
-        break;
-      }
-    }
-
-    // Hit speedboats too
-    if (!hit) {
-      for (const sb of speedboats) {
-        if (!sb.alive) continue;
-        if (Math.abs(dc.x - sb.x) < 25 && Math.abs(dc.y - sb.y) < 15) {
-          sb.alive = false;
-          addExplosion(sb.x, sb.y, 25, true);
-          playBoom(false);
-          score += 500;
-          hit = true;
-          break;
-        }
-      }
-    }
-
-    // Hit terrain
-    if (!hit && dc.y >= getTerrainY(dc.x)) {
+    if (dc.y >= getTerrainY(dc.x)) {
       hit = true;
     }
 
     if (hit || dc.life <= 0) {
       if (dc.sinking) {
-        // ── Massive underwater depth charge explosion ──
+        // ── Spawn expanding shockwave that does real damage ──
+        shockwaves.push({
+          x: dc.x, y: dc.y,
+          radius: 10,
+          maxRadius: 300,
+          speed: 250,       // px/s expansion
+          life: 1.2,
+          maxLife: 1.2,
+          damage: 4,        // max damage at epicenter
+          hasDamaged: new Set() // track what we've already hit
+        });
 
-        // Underwater flash — bright white core
-        addExplosion(dc.x, dc.y, 15, true);
+        // Initial flash at detonation point
+        addExplosion(dc.x, dc.y, 12, true);
 
-        // Shockwave rings — expanding circles of displaced water
-        for (let ring = 0; ring < 3; ring++) {
-          const ringDelay = ring * 0.15;
-          const ringSpeed = 80 + ring * 40;
-          for (let a = 0; a < 16; a++) {
-            const angle = (a / 16) * Math.PI * 2;
-            addParticle(dc.x, dc.y,
-              Math.cos(angle) * ringSpeed, Math.sin(angle) * ringSpeed * 0.4,
-              0.5 + ringDelay, 'rgba(100, 180, 255, 0.6)', 3 + ring);
-          }
-        }
-
-        // Massive bubble column rising to surface
-        const depth = waterLineY - dc.y;
-        for (let b = 0; b < 25; b++) {
-          const bx = dc.x + (Math.random() - 0.5) * 40;
-          const by = dc.y + (Math.random() - 0.5) * 20;
-          addParticle(bx, by,
-            (Math.random() - 0.5) * 20, -60 - Math.random() * 80,
-            0.6 + Math.random() * 0.8,
+        // Bubble column rising to surface
+        for (let b = 0; b < 20; b++) {
+          addParticle(dc.x + (Math.random() - 0.5) * 30, dc.y + (Math.random() - 0.5) * 15,
+            (Math.random() - 0.5) * 15, -50 - Math.random() * 70,
+            0.5 + Math.random() * 0.8,
             Math.random() < 0.3 ? '#fff' : '#4af',
-            2 + Math.random() * 3);
-        }
-
-        // Deep rumble particles — dark displaced water
-        for (let d = 0; d < 12; d++) {
-          const angle = Math.random() * Math.PI * 2;
-          const sp = 30 + Math.random() * 60;
-          addParticle(dc.x, dc.y,
-            Math.cos(angle) * sp, Math.sin(angle) * sp * 0.5,
-            0.8 + Math.random() * 0.4, '#146', 4 + Math.random() * 3);
-        }
-
-        // Surface eruption — massive water column shooting up
-        for (let s = 0; s < 20; s++) {
-          const sx = dc.x + (Math.random() - 0.5) * 50;
-          addParticle(sx, waterLineY,
-            (Math.random() - 0.5) * 80, -100 - Math.random() * 120,
-            0.6 + Math.random() * 0.5,
-            Math.random() < 0.4 ? '#fff' : '#8cf',
-            3 + Math.random() * 4);
-        }
-
-        // Secondary spray ring at surface
-        for (let r = 0; r < 12; r++) {
-          const angle = (r / 12) * Math.PI * 2;
-          addParticle(dc.x, waterLineY,
-            Math.cos(angle) * 100, -30 - Math.random() * 50,
-            0.5 + Math.random() * 0.3, '#4af', 2 + Math.random() * 2);
-        }
-
-        // Foam / mist lingering at surface
-        for (let f = 0; f < 8; f++) {
-          addParticle(dc.x + (Math.random() - 0.5) * 60, waterLineY - 5,
-            (Math.random() - 0.5) * 30, -5 - Math.random() * 10,
-            1.0 + Math.random() * 0.5, 'rgba(200, 230, 255, 0.5)', 5 + Math.random() * 3);
+            2 + Math.random() * 2);
         }
       } else {
         addExplosion(dc.x, dc.y, 20, true);
       }
       playBoom(true);
       depthCharges.splice(i, 1);
+    }
+  }
+}
+
+function updateShockwaves(dt) {
+  for (let i = shockwaves.length - 1; i >= 0; i--) {
+    const sw = shockwaves[i];
+    sw.radius += sw.speed * dt;
+    sw.life -= dt;
+
+    // Damage falloff: full damage at center, zero at maxRadius
+    const damageMult = Math.max(0, 1 - sw.radius / sw.maxRadius);
+
+    // Damage submarines at any depth
+    for (const sub of submarines) {
+      if (!sub.alive || sw.hasDamaged.has(sub)) continue;
+      const dist = Math.sqrt((sub.x - sw.x) ** 2 + (sub.y - sw.y) ** 2);
+      if (dist < sw.radius + 30) {
+        sw.hasDamaged.add(sub);
+        const dmg = Math.max(1, Math.round(sw.damage * damageMult));
+        sub.hp -= dmg;
+        addExplosion(sub.x, sub.y, 8, false);
+        if (sub.hp <= 0) {
+          sub.alive = false;
+          addExplosion(sub.x, sub.y, 35, true);
+          playBoom(true);
+          score += 800;
+        }
+      }
+    }
+
+    // Damage speedboats
+    for (const sb of speedboats) {
+      if (!sb.alive || sw.hasDamaged.has(sb)) continue;
+      const dist = Math.abs(sb.x - sw.x);
+      if (dist < sw.radius + 15 && Math.abs(sb.y - sw.y) < 40) {
+        sw.hasDamaged.add(sb);
+        sb.alive = false;
+        addExplosion(sb.x, sb.y, 20, true);
+        playBoom(false);
+        score += 250;
+      }
+    }
+
+    // Surface eruption — when the shockwave reaches the water surface
+    if (sw.y - sw.radius <= waterLineY && sw.radius < sw.maxRadius) {
+      // Water column and spray proportional to how fresh the wave is
+      if (Math.random() < 0.5 * damageMult) {
+        const surfX = sw.x + (Math.random() - 0.5) * sw.radius * 1.5;
+        addParticle(surfX, waterLineY,
+          (Math.random() - 0.5) * 60 * damageMult, -60 - Math.random() * 80 * damageMult,
+          0.4 + Math.random() * 0.3,
+          Math.random() < 0.4 ? '#fff' : '#8cf',
+          2 + Math.random() * 3);
+      }
+    }
+
+    if (sw.life <= 0 || sw.radius >= sw.maxRadius) {
+      shockwaves.splice(i, 1);
     }
   }
 }
@@ -2852,10 +2844,12 @@ function updateZeppelinEnemy(en, dt) {
   const groundY = getTerrainY(en.x);
   if (en.y > groundY - 80) en.y = groundY - 80;
 
-  // Drop 3 bombs in a spread periodically
+  // Drop 3 bombs only when player is below or near player's home base
+  const playerBelow = player.y > en.y && Math.abs(player.x - en.x) < 200;
+  const nearPlayerBase = Math.abs(en.x - baseX - BASE_WIDTH / 2) < 300;
   const fireIntervalMult = enemyAccuracyDebuff > 0 ? 2 : 1;
   en.fireTimer--;
-  if (en.fireTimer <= 0) {
+  if (en.fireTimer <= 0 && (playerBelow || nearPlayerBase)) {
     for (let k = -1; k <= 1; k++) {
       bombs.push({ x: en.x + k * 15, y: en.y + 20, vx: en.vx * 0.2 + k * 10, vy: 15, life: 6, friendly: false });
     }
@@ -2964,8 +2958,8 @@ function updateEnemies(dt) {
           while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
           while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
           en.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), 2.5 * dt);
-          en.vx = Math.cos(en.angle) * en.speed * 0.7;
-          en.vy = Math.sin(en.angle) * en.speed * 0.7;
+          en.vx = Math.cos(en.angle) * en.speed;
+          en.vy = Math.sin(en.angle) * en.speed;
           en.x += en.vx * dt;
           en.y += en.vy * dt;
         } else {
@@ -3683,6 +3677,87 @@ function draw() {
     }
   }
 
+  // Underwater shockwaves — visible expanding pressure rings
+  for (const sw of shockwaves) {
+    const screenX = sw.x - camX;
+    if (screenX < -sw.radius - 50 || screenX > W + sw.radius + 50) continue;
+    const progress = 1 - sw.life / sw.maxLife; // 0 → 1
+    const alpha = Math.max(0, 0.7 * (1 - progress));
+
+    ctx.save();
+
+    // Clip to below water surface so rings don't show above water
+    ctx.beginPath();
+    ctx.rect(camX > 0 ? 0 : -camX, waterLineY, W + 200, 600);
+    ctx.clip();
+
+    // Outer shockwave ring — bright, visible pressure front
+    ctx.strokeStyle = `rgba(120, 200, 255, ${alpha})`;
+    ctx.lineWidth = 3 + (1 - progress) * 4; // thicker when fresh
+    ctx.beginPath();
+    ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Secondary inner ring — slightly behind
+    if (sw.radius > 30) {
+      ctx.strokeStyle = `rgba(180, 220, 255, ${alpha * 0.6})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sw.x, sw.y, sw.radius * 0.7, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // Third faint ring
+    if (sw.radius > 60) {
+      ctx.strokeStyle = `rgba(80, 150, 220, ${alpha * 0.3})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(sw.x, sw.y, sw.radius * 0.4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // Glow fill inside the wavefront — fading disturbance
+    const grad = ctx.createRadialGradient(sw.x, sw.y, 0, sw.x, sw.y, sw.radius);
+    grad.addColorStop(0, `rgba(150, 210, 255, ${alpha * 0.15})`);
+    grad.addColorStop(0.6, `rgba(80, 160, 230, ${alpha * 0.08})`);
+    grad.addColorStop(1, 'rgba(80, 160, 230, 0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+
+    // Disturbance at the water surface where the ring intersects
+    if (sw.radius > Math.abs(sw.y - waterLineY)) {
+      // Calculate where the ring circle intersects the waterline
+      const dy = waterLineY - sw.y;
+      const intersectHalf = Math.sqrt(Math.max(0, sw.radius * sw.radius - dy * dy));
+      const surfAlpha = alpha * 0.8;
+
+      // Churning water line at intersection points
+      for (let side = -1; side <= 1; side += 2) {
+        const ix = sw.x + side * intersectHalf;
+        ctx.strokeStyle = `rgba(200, 235, 255, ${surfAlpha})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(ix - 8, waterLineY);
+        ctx.quadraticCurveTo(ix, waterLineY - 6 * (1 - progress), ix + 8, waterLineY);
+        ctx.stroke();
+      }
+
+      // Foam/spray along the surface between intersection points
+      if (Math.random() < 0.4 * (1 - progress)) {
+        const sprayX = sw.x + (Math.random() - 0.5) * intersectHalf * 2;
+        addParticle(sprayX, waterLineY,
+          (Math.random() - 0.5) * 40, -20 - Math.random() * 50 * (1 - progress),
+          0.3 + Math.random() * 0.2,
+          Math.random() < 0.3 ? '#fff' : '#8cf',
+          2 + Math.random() * 2);
+      }
+    }
+  }
+
   // Flak shots
   for (const f of flakShots) {
     neonGlow(ctx, '#f80', 6);
@@ -3842,7 +3917,13 @@ function draw() {
     ctx.fillStyle = '#888';
     ctx.font = '16px "Courier New", monospace';
     ctx.fillText(`FINAL SCORE: ${score}`, W / 2, H / 2 + 10);
-    ctx.fillText('Press ENTER to restart', W / 2, H / 2 + 40);
+    ctx.fillText('Press ENTER to restart from Level 1', W / 2, H / 2 + 40);
+    if (highestLevel > 1) {
+      neonGlow(ctx, '#0ff', 6);
+      ctx.fillStyle = '#0ff';
+      ctx.fillText(`Press C to continue from Level ${highestLevel}`, W / 2, H / 2 + 65);
+      clearGlow(ctx);
+    }
   }
 
   if (state === ST.LEVEL_COMPLETE) {
@@ -5574,6 +5655,20 @@ function handleInput() {
     if (state === ST.TITLE || state === ST.GAME_OVER) {
       initAudio();
       level = 1;
+      score = 0;
+      lives = 5;
+      initLevel();
+      state = ST.PLAYING;
+      if (touchStartBtn) touchStartBtn.classList.remove('visible');
+    }
+  }
+
+  // Continue from highest level (C key, only on game over)
+  if (keys['KeyC']) {
+    keys['KeyC'] = false;
+    if (state === ST.GAME_OVER && highestLevel > 1) {
+      initAudio();
+      level = highestLevel;
       score = 0;
       lives = 5;
       initLevel();
