@@ -1431,6 +1431,11 @@ function spawnFleeingPeople(x, groundY) {
 function onBuildingDestroyed(bld) {
   addValourScore(buildingScores[bld.type] || 100, bld.x);
 
+  // Kill linked cave turret when its building is destroyed
+  if (bld._caveTurret) {
+    bld._caveTurret.alive = false;
+  }
+
   // Spawn fleeing people (except bunker/heavyBunker, and not on sea/normandy — military outposts)
   const theme = getLevelTheme(level);
   if (bld.type !== 'bunker' && bld.type !== 'heavyBunker' && theme !== 'sea' && theme !== 'normandy') {
@@ -2967,14 +2972,6 @@ function updateBullets(dt) {
           tr.hp--;
           addExplosion(b.x, b.y, 8, false);
           if (tr.hp <= 0) { tr.alive = false; addExplosion(tr.x, tr.y, 30, true); playBoom(true); score += 600; }
-          bullets.splice(i, 1); break;
-        }
-      }
-      // Bats (cave)
-      for (const bat of bats) {
-        if (!bat.alive) continue;
-        if (Math.abs(b.x - bat.x) < 8 && Math.abs(b.y - bat.y) < 8) {
-          bat.alive = false; addExplosion(bat.x, bat.y, 5, false); score += 50;
           bullets.splice(i, 1); break;
         }
       }
@@ -5989,16 +5986,22 @@ function updateBats(dt) {
     const dyP = player.y - bat.y;
     const distP = Math.sqrt(dxP * dxP + dyP * dyP);
 
-    // Rush toward player if close
-    if (distP < 200 && !bat.rushing && Math.random() < 0.02) {
+    // Scatter away from player if close (harmless — just ambiance)
+    if (distP < 120 && !bat.rushing) {
       bat.rushing = true;
-      bat.rushTimer = 1.5;
+      bat.rushTimer = 1.0;
     }
 
     if (bat.rushing) {
       bat.rushTimer -= dt;
-      bat.x += (dxP / distP) * 180 * dt;
-      bat.y += (dyP / distP) * 180 * dt;
+      // Flee away from player
+      bat.x -= (dxP / (distP || 1)) * 120 * dt;
+      bat.y -= (dyP / (distP || 1)) * 120 * dt;
+      // Clamp to cave bounds
+      const floorY = getTerrainY(bat.x);
+      const ceilY = getCeilingY(bat.x);
+      if (bat.y > floorY - 15) bat.y = floorY - 15;
+      if (bat.y < ceilY + 15) bat.y = ceilY + 15;
       if (bat.rushTimer <= 0) {
         bat.rushing = false;
         bat.centerX = bat.x;
@@ -6009,13 +6012,6 @@ function updateBats(dt) {
       bat.angle += bat.orbitSpeed * dt;
       bat.x = bat.centerX + Math.cos(bat.angle) * bat.orbitRadius;
       bat.y = bat.centerY + Math.sin(bat.angle) * bat.orbitRadius * 0.6;
-    }
-
-    // Collision with player
-    if (distP < 15 && !player.burning && player.invincible <= 0 && state === ST.PLAYING) {
-      bat.alive = false;
-      addExplosion(bat.x, bat.y, 5, false);
-      damagePlayer(1);
     }
   }
 }
@@ -6074,18 +6070,21 @@ function updateCaveTurrets(dt) {
     if (!ct.alive) continue;
     ct.fireTimer -= 1;
     if (ct.fireTimer <= 0) {
-      ct.fireTimer = 70 + Math.random() * 30;
+      ct.fireTimer = 100 + Math.random() * 50;
       // Shoot toward player
       const dx = player.x - ct.x;
       const dy = player.y - ct.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < 500 && dist > 30) {
-        const speed = FLAK_SPEED * 0.8;
+        const speed = FLAK_SPEED * 0.6;
+        // Inaccurate aim — significant spread
+        const spread = (Math.random() - 0.5) * 0.6;
+        const angle = Math.atan2(dy, dx) + spread;
         flakShots.push({
           x: ct.x, y: ct.y + (ct.onCeiling ? 10 : -10),
-          vx: (dx / dist) * speed,
-          vy: (dy / dist) * speed,
-          life: 2
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life: 1.5
         });
       }
     }
