@@ -75,6 +75,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0a0a0f;font-family:
     <div class="hud-item"><span class="hud-label">Lives</span><span id="h-lives" class="hud-val">●●●●●</span></div>
     <div class="hud-item"><span class="hud-label">Fuel</span><span id="fuel-bar-wrap" class="fuel-bar"><span id="h-fuel" class="fuel-fill" style="width:100%"></span></span><span id="h-fuel-pct" class="fuel-pct">100%</span></div>
     <div class="hud-item"><span class="hud-label">Bombs</span><span id="h-bombs" class="hud-val">5</span></div>
+    <div class="hud-item" id="h-dc-wrap" style="display:none"><span class="hud-label">DC</span><span id="h-dc" class="hud-val">3</span></div>
     <div class="hud-item"><span class="hud-label">Ammo</span><span id="ammo-bar-wrap" class="ammo-bar"><span id="h-ammo" class="ammo-fill" style="width:100%"></span></span><span id="h-ammo-pct" class="ammo-pct">100%</span></div>
     <div class="hud-item"><span class="hud-label">Score</span><span id="h-score" class="hud-val green">0</span></div>
     <div class="hud-item"><span class="hud-label">Level</span><span id="h-level" class="hud-val">1</span></div>
@@ -112,6 +113,7 @@ const BOMB_VXFRAC = 0.8;
 const MAX_FUEL = 2500;
 const MAX_AMMO = 200;
 const MAX_BOMBS = 5;
+const MAX_DEPTH_CHARGES = 3;
 const FLAK_INTERVAL = 90;
 const FLAK_SPEED = 300;
 const ENEMY_SPEED = 200;
@@ -147,6 +149,9 @@ function getLevelTheme(lvl) {
 
 // ── Submarine data ──
 let submarines = [];
+
+// ── Speedboat data ──
+let speedboats = [];
 
 // ── Sopwith-style flight model ──
 // 16 discrete angles (like original), speed scalar, gravity table
@@ -448,8 +453,8 @@ function generateSeaTerrain(groundBase) {
     terrain[x] = waterLineY;
   }
 
-  // Generate 5-8 islands as terrain peaks rising above water
-  const numIslands = 5 + Math.floor(Math.random() * 4);
+  // Generate 8-12 islands as terrain peaks rising above water
+  const numIslands = 8 + Math.floor(Math.random() * 5);
   const islandSpacing = WORLD_W / (numIslands + 2);
   for (let i = 0; i < numIslands; i++) {
     // Spread islands across the world, avoiding center (carrier area)
@@ -527,7 +532,7 @@ function isInBaseTerritory(x) {
 }
 
 // ── Entities ──
-let player, bullets, bombs, particles, enemies, buildings, flakShots, birds, oxen;
+let player, bullets, bombs, depthCharges, particles, enemies, buildings, flakShots, birds, oxen;
 let fleeingPeople, dragons;
 
 function initPlayer() {
@@ -546,8 +551,10 @@ function initPlayer() {
     fuel: MAX_FUEL,
     ammo: MAX_AMMO,
     bombCount: MAX_BOMBS,
+    depthCharges: MAX_DEPTH_CHARGES,
     fireCooldown: 0,
     bombCooldown: 0,
+    depthChargeCooldown: 0,
     invincible: 0,
     landed: true,
     autopilot: false,
@@ -817,6 +824,8 @@ function spawnEnemies() {
       speed: spec.speed,
       stalled: false,
       stallTimer: 0,
+      burning: false,
+      burnTimer: 0,
       patrolDir: facesRight ? 1 : -1,
       parkSlot: i,
       // Airfield state
@@ -935,6 +944,7 @@ function initLevel() {
   initPlayer();
   bullets = [];
   bombs = [];
+  depthCharges = [];
   particles = [];
   flakShots = [];
   fleeingPeople = [];
@@ -949,6 +959,7 @@ function initLevel() {
   } else {
     oxen = []; // no ground animals on sea levels
     spawnSubmarines();
+    spawnSpeedboats();
   }
   spawnBirds();
   spawnDragons();
@@ -1729,6 +1740,7 @@ function update(dt) {
     updatePlayer(dt);
     updateBullets(dt);
     updateBombs(dt);
+    updateDepthCharges(dt);
     updateEnemies(dt);
     updateFlak(dt);
     updateBirds(dt);
@@ -1736,6 +1748,7 @@ function update(dt) {
     updateFleeingPeople(dt);
     updateDragons(dt);
     updateSubmarines(dt);
+    updateSpeedboats(dt);
     // Player crashes into buildings — both destroyed
     if (!player.landed && !player.burning && player.invincible <= 0) {
       for (const bld of buildings) {
@@ -1846,6 +1859,7 @@ function updatePlayer(dt) {
       // Timers still tick
       p.fireCooldown -= dt;
       p.bombCooldown -= dt;
+      p.depthChargeCooldown -= dt;
       if (p.invincible > 0) p.invincible -= dt;
       p.fuel -= dt * 5; // minimal fuel use during beam approach
       if (p.fuel <= 0) p.fuel = 0;
@@ -1859,6 +1873,7 @@ function updatePlayer(dt) {
         p.vx = 0; p.vy = 0;
         p.x = homeX; p.y = homeY;
         p.fuel = MAX_FUEL; p.ammo = MAX_AMMO; p.bombCount = MAX_BOMBS;
+        p.depthCharges = MAX_DEPTH_CHARGES;
         p.hp = PLAYER_MAX_HP; // Repair on landing
       }
       return; // Skip normal physics — beam handles everything
@@ -1984,10 +1999,19 @@ function updatePlayer(dt) {
       p.bombCooldown = 0.4;
       playBombDrop();
     }
+
+    // Depth charge (D key) — sinks through water, damages submerged subs
+    if (keys['KeyD'] && p.depthChargeCooldown <= 0 && p.depthCharges > 0 && waterLineY > 0) {
+      depthCharges.push({ x: p.x, y: p.y + 5, vx: p.vx * 0.3, vy: 30, life: 6, sinking: false });
+      p.depthCharges--;
+      p.depthChargeCooldown = 0.6;
+      playBombDrop();
+    }
   }
 
   p.fireCooldown -= dt;
   p.bombCooldown -= dt;
+  p.depthChargeCooldown -= dt;
   if (p.invincible > 0) p.invincible -= dt;
   if (p.hitFlash > 0) p.hitFlash -= dt;
 
@@ -2128,6 +2152,7 @@ function updatePlayer(dt) {
         p.orient = false;
         p.landed = true; p.stalled = false;
         p.fuel = MAX_FUEL; p.ammo = MAX_AMMO; p.bombCount = MAX_BOMBS;
+        p.depthCharges = MAX_DEPTH_CHARGES;
         p.hp = PLAYER_MAX_HP; // Repair on landing
       } else {
         killPlayer();
@@ -2173,6 +2198,22 @@ function damagePlayer(amount) {
       landed: false
     });
   }
+}
+
+function startEnemyBurn(en) {
+  if (en.burning) return;
+  en.burning = true;
+  en.burnTimer = 1.5;
+  en.speed = en.speed * 0.4; // slow down
+  score += ENEMY_SPECS[en.type].score;
+}
+
+function killEnemy(en) {
+  en.alive = false;
+  en.burning = false;
+  addExplosion(en.x, en.y, 25, true);
+  playBoom(false);
+  launchNextFromBases();
 }
 
 function killPlayer() {
@@ -2286,16 +2327,12 @@ function updateBullets(dt) {
     // Friendly bullets hit enemies (type-aware hitbox)
     if (b.friendly) {
       for (const en of enemies) {
-        if (!en.alive || en.state === 'hangar') continue;
+        if (!en.alive || en.burning || en.state === 'hangar') continue;
         const spec = ENEMY_SPECS[en.type] || ENEMY_SPECS.biplane;
         if (Math.abs(b.x - en.x) < spec.hitW && Math.abs(b.y - en.y) < spec.hitH) {
           en.hp--;
           if (en.hp <= 0) {
-            en.alive = false;
-            addExplosion(en.x, en.y, 20, true);
-            playBoom(false);
-            score += spec.score;
-            launchNextFromBases();
+            startEnemyBurn(en);
           }
           bullets.splice(i, 1);
           break;
@@ -2334,6 +2371,26 @@ function updateBullets(dt) {
             addExplosion(sub.x, sub.y, 30, true);
             playBoom(true);
             score += 400;
+          } else {
+            addExplosion(b.x, b.y, 5, false);
+          }
+          bullets.splice(i, 1);
+          break;
+        }
+      }
+    }
+
+    // Friendly bullets hit speedboats
+    if (b.friendly) {
+      for (const sb of speedboats) {
+        if (!sb.alive) continue;
+        if (Math.abs(b.x - sb.x) < 20 && Math.abs(b.y - sb.y) < 12) {
+          sb.hp--;
+          if (sb.hp <= 0) {
+            sb.alive = false;
+            addExplosion(sb.x, sb.y, 20, true);
+            playBoom(false);
+            score += 250;
           } else {
             addExplosion(b.x, b.y, 5, false);
           }
@@ -2407,6 +2464,21 @@ function updateBombs(dt) {
       }
     }
 
+    // Player bombs hit speedboats
+    if (!hit && b.friendly !== false) {
+      for (const sb of speedboats) {
+        if (!sb.alive) continue;
+        if (Math.abs(b.x - sb.x) < 25 && Math.abs(b.y - sb.y) < 15) {
+          sb.alive = false;
+          addExplosion(sb.x, sb.y, 25, true);
+          playBoom(false);
+          score += 500;
+          hit = true;
+          break;
+        }
+      }
+    }
+
     // Ground hit (checked after buildings so bombs can hit structures on terrain)
     if (!hit && b.y >= getTerrainY(b.x)) {
       hit = true;
@@ -2445,6 +2517,146 @@ function updateBombs(dt) {
       }
       playBoom(true);
       bombs.splice(i, 1);
+    }
+  }
+}
+
+function updateDepthCharges(dt) {
+  for (let i = depthCharges.length - 1; i >= 0; i--) {
+    const dc = depthCharges[i];
+    dc.x += dc.vx * dt;
+    dc.vy += PROJ_GRAVITY * dt * 0.5; // slower gravity than bombs
+    dc.y += dc.vy * dt;
+    dc.life -= dt;
+    dc.vx *= 0.98; // water drag
+
+    // Track if we've entered water
+    if (!dc.sinking && waterLineY > 0 && dc.y >= waterLineY) {
+      dc.sinking = true;
+      dc.vy = 40; // slow sinking speed in water
+      dc.vx *= 0.3;
+      // Water entry splash
+      for (let s = 0; s < 6; s++) {
+        addParticle(dc.x + (Math.random() - 0.5) * 8, waterLineY,
+          (Math.random() - 0.5) * 40, -30 - Math.random() * 40, 0.4,
+          '#4af', 1.5 + Math.random());
+      }
+    }
+
+    // Underwater: constant slow sink, heavy drag
+    if (dc.sinking) {
+      dc.vy = 50; // steady sink rate
+      dc.vx *= 0.95;
+    }
+
+    let hit = false;
+
+    // Hit submarines — works at ANY depth (the whole point)
+    for (const sub of submarines) {
+      if (!sub.alive) continue;
+      if (Math.abs(dc.x - sub.x) < 60 && Math.abs(dc.y - sub.y) < 25) {
+        sub.hp -= 3; // depth charges are devastating
+        addExplosion(dc.x, dc.y, 20, false);
+        if (sub.hp <= 0) {
+          sub.alive = false;
+          addExplosion(sub.x, sub.y, 40, true);
+          playBoom(true);
+          score += 800;
+        }
+        hit = true;
+        break;
+      }
+    }
+
+    // Hit speedboats too
+    if (!hit) {
+      for (const sb of speedboats) {
+        if (!sb.alive) continue;
+        if (Math.abs(dc.x - sb.x) < 25 && Math.abs(dc.y - sb.y) < 15) {
+          sb.alive = false;
+          addExplosion(sb.x, sb.y, 25, true);
+          playBoom(false);
+          score += 500;
+          hit = true;
+          break;
+        }
+      }
+    }
+
+    // Hit terrain
+    if (!hit && dc.y >= getTerrainY(dc.x)) {
+      hit = true;
+    }
+
+    if (hit || dc.life <= 0) {
+      if (dc.sinking) {
+        // ── Massive underwater depth charge explosion ──
+
+        // Underwater flash — bright white core
+        addExplosion(dc.x, dc.y, 15, true);
+
+        // Shockwave rings — expanding circles of displaced water
+        for (let ring = 0; ring < 3; ring++) {
+          const ringDelay = ring * 0.15;
+          const ringSpeed = 80 + ring * 40;
+          for (let a = 0; a < 16; a++) {
+            const angle = (a / 16) * Math.PI * 2;
+            addParticle(dc.x, dc.y,
+              Math.cos(angle) * ringSpeed, Math.sin(angle) * ringSpeed * 0.4,
+              0.5 + ringDelay, 'rgba(100, 180, 255, 0.6)', 3 + ring);
+          }
+        }
+
+        // Massive bubble column rising to surface
+        const depth = waterLineY - dc.y;
+        for (let b = 0; b < 25; b++) {
+          const bx = dc.x + (Math.random() - 0.5) * 40;
+          const by = dc.y + (Math.random() - 0.5) * 20;
+          addParticle(bx, by,
+            (Math.random() - 0.5) * 20, -60 - Math.random() * 80,
+            0.6 + Math.random() * 0.8,
+            Math.random() < 0.3 ? '#fff' : '#4af',
+            2 + Math.random() * 3);
+        }
+
+        // Deep rumble particles — dark displaced water
+        for (let d = 0; d < 12; d++) {
+          const angle = Math.random() * Math.PI * 2;
+          const sp = 30 + Math.random() * 60;
+          addParticle(dc.x, dc.y,
+            Math.cos(angle) * sp, Math.sin(angle) * sp * 0.5,
+            0.8 + Math.random() * 0.4, '#146', 4 + Math.random() * 3);
+        }
+
+        // Surface eruption — massive water column shooting up
+        for (let s = 0; s < 20; s++) {
+          const sx = dc.x + (Math.random() - 0.5) * 50;
+          addParticle(sx, waterLineY,
+            (Math.random() - 0.5) * 80, -100 - Math.random() * 120,
+            0.6 + Math.random() * 0.5,
+            Math.random() < 0.4 ? '#fff' : '#8cf',
+            3 + Math.random() * 4);
+        }
+
+        // Secondary spray ring at surface
+        for (let r = 0; r < 12; r++) {
+          const angle = (r / 12) * Math.PI * 2;
+          addParticle(dc.x, waterLineY,
+            Math.cos(angle) * 100, -30 - Math.random() * 50,
+            0.5 + Math.random() * 0.3, '#4af', 2 + Math.random() * 2);
+        }
+
+        // Foam / mist lingering at surface
+        for (let f = 0; f < 8; f++) {
+          addParticle(dc.x + (Math.random() - 0.5) * 60, waterLineY - 5,
+            (Math.random() - 0.5) * 30, -5 - Math.random() * 10,
+            1.0 + Math.random() * 0.5, 'rgba(200, 230, 255, 0.5)', 5 + Math.random() * 3);
+        }
+      } else {
+        addExplosion(dc.x, dc.y, 20, true);
+      }
+      playBoom(true);
+      depthCharges.splice(i, 1);
     }
   }
 }
@@ -2502,10 +2714,7 @@ function updateChaserEnemy(en, dt, playerSafe, turnRate, bulletSpeedMult) {
   const groundY = getTerrainY(en.x);
   if (en.y > groundY - 12) {
     // Crash into terrain — enemy dies
-    en.alive = false;
-    addExplosion(en.x, en.y, 25, false);
-    score += ENEMY_SPECS[en.type].score;
-    launchNextFromBases();
+    killEnemy(en);
     return 9999;
   }
   if (en.y < 30) en.y = 30;
@@ -2556,10 +2765,7 @@ function updateBomberEnemy(en, dt, playerSafe) {
 
   const groundY = getTerrainY(en.x);
   if (en.y > groundY - 12) {
-    en.alive = false;
-    addExplosion(en.x, en.y, 25, false);
-    score += ENEMY_SPECS[en.type].score;
-    launchNextFromBases();
+    killEnemy(en);
     return 9999;
   }
   if (en.y < 50) en.y = 50;
@@ -2663,6 +2869,33 @@ function updateEnemies(dt) {
   for (const en of enemies) {
     if (!en.alive) continue;
 
+    // ── Burning state: uncontrollable dive with fire/smoke ──
+    if (en.burning) {
+      en.burnTimer -= dt;
+      // Nose drops toward ground
+      en.angle += (Math.PI * 0.3) * dt; // spiral down
+      en.vy += 120 * dt; // gravity pull
+      en.vx *= 0.98; // drag
+      en.x += en.vx * dt;
+      en.y += en.vy * dt;
+      // Fire/smoke trail
+      if (Math.random() < 0.6) {
+        addParticle(en.x + (Math.random() - 0.5) * 10, en.y + (Math.random() - 0.5) * 10,
+          (Math.random() - 0.5) * 30, -20 - Math.random() * 20, 0.4,
+          Math.random() < 0.5 ? '#f80' : '#f44', 2 + Math.random());
+      }
+      if (Math.random() < 0.3) {
+        addParticle(en.x + (Math.random() - 0.5) * 10, en.y,
+          (Math.random() - 0.5) * 15, -10 - Math.random() * 15, 0.6, '#333', 3);
+      }
+      // Hit terrain or timer expired: final explosion
+      const burnGroundY = getTerrainY(en.x);
+      if (en.y > burnGroundY - 8 || en.burnTimer <= 0) {
+        killEnemy(en);
+      }
+      continue;
+    }
+
     // ── Hangar state: hidden, waiting for launch ──
     if (en.state === 'hangar') continue;
 
@@ -2751,10 +2984,7 @@ function updateEnemies(dt) {
         const retGroundY = getTerrainY(en.x);
         if (horizDist > 120) {
           if (en.y > retGroundY - 12) {
-            en.alive = false;
-            addExplosion(en.x, en.y, 25, false);
-            score += ENEMY_SPECS[en.type].score;
-            launchNextFromBases();
+            killEnemy(en);
             continue;
           }
         } else {
@@ -2813,17 +3043,15 @@ function updateEnemies(dt) {
 
     // Collision with player (both grounded and flying enemies)
     // Use velocity-compensated hitbox to prevent tunneling at high speeds
-    if (player.invincible <= 0 && !player.burning && state === ST.PLAYING && !en.landed) {
+    if (!en.burning && player.invincible <= 0 && !player.burning && state === ST.PLAYING && !en.landed) {
       const spec = ENEMY_SPECS[en.type];
       const relVx = Math.abs(en.vx - player.vx);
       const relVy = Math.abs(en.vy - player.vy);
       const extraW = relVx * dt * 0.5;
       const extraH = relVy * dt * 0.5;
       if (Math.abs(en.x - player.x) < spec.hitW + 10 + extraW && Math.abs(en.y - player.y) < spec.hitH + 8 + extraH) {
-        en.alive = false;
-        addExplosion(en.x, en.y, 20, true);
+        startEnemyBurn(en);
         damagePlayer(3); // Collision is devastating
-        launchNextFromBases();
       }
     }
 
@@ -2833,13 +3061,11 @@ function updateEnemies(dt) {
         if (!bld.alive) continue;
         if (en.x > bld.x - 10 && en.x < bld.x + bld.w + 10 &&
             en.y > bld.y - 5 && en.y < bld.y + bld.h + 5) {
-          en.alive = false;
+          startEnemyBurn(en);
           bld.alive = false;
-          addExplosion(en.x, en.y, 25, true);
           addExplosion(bld.x + bld.w / 2, bld.y + bld.h / 2, 25, true);
           playBoom(true);
           onBuildingDestroyed(bld);
-          launchNextFromBases();
           break;
         }
       }
@@ -3142,6 +3368,23 @@ function updateHUD() {
     bombEl.classList.remove('red');
   }
 
+  // Depth charge count — only show on sea levels
+  const dcWrap = document.getElementById('h-dc-wrap');
+  const dcEl = document.getElementById('h-dc');
+  if (waterLineY > 0) {
+    dcWrap.style.display = '';
+    if (p.depthCharges <= 0) {
+      dcEl.textContent = 'EMPTY';
+      dcEl.classList.add('red');
+      dcEl.classList.remove('green');
+    } else {
+      dcEl.textContent = p.depthCharges;
+      dcEl.classList.remove('red');
+    }
+  } else {
+    dcWrap.style.display = 'none';
+  }
+
   document.getElementById('h-score').textContent = String(score).padStart(6, '0');
   document.getElementById('h-level').textContent = level;
 }
@@ -3376,6 +3619,14 @@ function draw() {
     drawSubmarine(sub);
   }
 
+  // Speedboats
+  for (const sb of speedboats) {
+    if (!sb.alive) continue;
+    const screenX = sb.x - camX;
+    if (screenX < -60 || screenX > W + 60) continue;
+    drawSpeedboat(sb);
+  }
+
   // Bombs & Torpedoes
   for (const b of bombs) {
     const screenX = b.x - camX;
@@ -3403,6 +3654,32 @@ function draw() {
       ctx.fill();
       clearGlow(ctx);
       addParticle(b.x, b.y - 2, 0, -10, 0.15, b.friendly === false ? '#f55' : '#f80', 1);
+    }
+  }
+
+  // Depth charges
+  for (const dc of depthCharges) {
+    const screenX = dc.x - camX;
+    if (screenX < -50 || screenX > W + 50) continue;
+    const dcCol = dc.sinking ? '#48f' : '#aaf';
+    neonGlow(ctx, dcCol, 5);
+    ctx.fillStyle = dcCol;
+    ctx.beginPath();
+    // Barrel shape — rounded rectangle
+    ctx.arc(dc.x, dc.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    // Ring detail
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(dc.x - 5, dc.y);
+    ctx.lineTo(dc.x + 5, dc.y);
+    ctx.stroke();
+    clearGlow(ctx);
+    // Bubble trail when sinking
+    if (dc.sinking && Math.random() < 0.3) {
+      addParticle(dc.x + (Math.random() - 0.5) * 6, dc.y - 5,
+        (Math.random() - 0.5) * 5, -15 - Math.random() * 10, 0.3, '#4af', 1.5);
     }
   }
 
@@ -3444,14 +3721,15 @@ function draw() {
     // If flying left (angle > 90° or < -90°), flip horizontally and mirror the rotation
     const flyingLeft = Math.abs(a) > Math.PI / 2;
     const drawAngle = flyingLeft ? (a > 0 ? a - Math.PI : a + Math.PI) : a;
+    const drawColor = en.burning ? '#f44' : spec.color;
     if (en.type === 'jet') {
-      drawJet(ctx, en.x, en.y, drawAngle, flyingLeft, spec.color);
+      drawJet(ctx, en.x, en.y, drawAngle, flyingLeft, drawColor);
     } else if (en.type === 'bomber') {
-      drawBomber(ctx, en.x, en.y, drawAngle, flyingLeft, spec.color);
+      drawBomber(ctx, en.x, en.y, drawAngle, flyingLeft, drawColor);
     } else if (en.type === 'zeppelin') {
-      drawZeppelin(ctx, en.x, en.y, drawAngle, flyingLeft, spec.color);
+      drawZeppelin(ctx, en.x, en.y, drawAngle, flyingLeft, drawColor);
     } else {
-      drawBiplane(ctx, en.x, en.y, drawAngle, flyingLeft, spec.color, undefined, false);
+      drawBiplane(ctx, en.x, en.y, drawAngle, flyingLeft, drawColor, undefined, false);
     }
   }
 
@@ -4405,6 +4683,175 @@ function drawSubmarine(sub) {
   ctx.globalAlpha = 1;
 }
 
+// ── Speedboats ──
+
+function spawnSpeedboats() {
+  speedboats = [];
+  if (getLevelTheme(level) !== 'sea') return;
+  const count = 2 + Math.floor(level / 3);
+  for (let i = 0; i < count; i++) {
+    let sx;
+    let attempts = 0;
+    do {
+      sx = 500 + Math.random() * (WORLD_W - 1000);
+      attempts++;
+    } while (attempts < 20 && (
+      Math.abs(sx - baseX - BASE_WIDTH / 2) < 600 ||
+      islandPeaks.some(ip => Math.abs(sx - ip.cx) < ip.w / 2 + 80)
+    ));
+    speedboats.push({
+      x: sx,
+      y: waterLineY - 2,
+      vx: (Math.random() < 0.5 ? 1 : -1) * (80 + Math.random() * 40),
+      alive: true,
+      hp: 2,
+      gunTimer: 0,
+      burstCount: 0,
+      frame: Math.random() * Math.PI * 2
+    });
+  }
+}
+
+function updateSpeedboats(dt) {
+  for (const sb of speedboats) {
+    if (!sb.alive) continue;
+
+    sb.frame += dt;
+
+    // Movement
+    sb.x += sb.vx * dt;
+    sb.y = waterLineY - 2;
+
+    // Bounce off world edges
+    if (sb.x < 200) { sb.x = 200; sb.vx = Math.abs(sb.vx); }
+    if (sb.x >= WORLD_W - 200) { sb.x = WORLD_W - 200; sb.vx = -Math.abs(sb.vx); }
+
+    // Avoid islands — reverse if terrain rises above water
+    const terrainHere = getTerrainY(sb.x);
+    const lookAhead = sb.x + Math.sign(sb.vx) * 60;
+    const terrainAhead = getTerrainY(((lookAhead % WORLD_W) + WORLD_W) % WORLD_W);
+    if (terrainAhead < waterLineY - 10) {
+      sb.vx = -sb.vx; // turn around
+    }
+
+    // Chase player when nearby
+    const dx = player.x - sb.x;
+    const dist = Math.sqrt(dx * dx + (player.y - sb.y) * (player.y - sb.y));
+    if (dist < 500 && !player.landed) {
+      const chase = Math.sign(dx) * (90 + Math.random() * 30);
+      sb.vx += (chase - sb.vx) * 0.02;
+    }
+
+    // Clamp speed
+    const maxSpd = 120;
+    if (Math.abs(sb.vx) > maxSpd) sb.vx = Math.sign(sb.vx) * maxSpd;
+
+    // Wake particles
+    if (Math.random() < 0.4) {
+      addParticle(sb.x - Math.sign(sb.vx) * 15, sb.y + 2,
+        -sb.vx * 0.1 + (Math.random() - 0.5) * 10, -5 - Math.random() * 5,
+        0.3, '#8cf', 1.5);
+    }
+
+    // Machine gun burst — fires rapid short bursts toward player
+    if (!player.landed && !player.burning && state === ST.PLAYING) {
+      sb.gunTimer -= dt;
+      if (sb.gunTimer <= 0 && dist < 500 && player.y < sb.y) {
+        const aimDx = player.x - sb.x;
+        const aimDy = player.y - (sb.y - 8);
+        const aimAngle = Math.atan2(aimDy, aimDx) + (Math.random() - 0.5) * 0.25;
+        bullets.push({
+          x: sb.x, y: sb.y - 8,
+          vx: Math.cos(aimAngle) * 280,
+          vy: Math.sin(aimAngle) * 280,
+          life: 1.5, friendly: false
+        });
+        sb.burstCount++;
+        if (sb.burstCount >= 3) {
+          sb.gunTimer = 1.2 + Math.random() * 0.8; // pause between bursts
+          sb.burstCount = 0;
+        } else {
+          sb.gunTimer = 0.1; // rapid fire within burst
+        }
+      }
+    }
+
+    // Player collision
+    if (player.invincible <= 0 && !player.burning && state === ST.PLAYING) {
+      if (Math.abs(player.x - sb.x) < 20 && Math.abs(player.y - sb.y) < 12) {
+        sb.alive = false;
+        addExplosion(sb.x, sb.y, 20, true);
+        playBoom(false);
+        score += 250;
+        damagePlayer(2);
+      }
+    }
+  }
+}
+
+function drawSpeedboat(sb) {
+  const facingRight = sb.vx >= 0;
+  const dir = facingRight ? 1 : -1;
+  const sx = sb.x;
+  const sy = sb.y;
+  const bob = Math.sin(sb.frame * 4) * 1.5; // gentle bobbing
+
+  // Hull — pointed speedboat shape
+  neonGlow(ctx, '#0f0', 6);
+  ctx.fillStyle = '#0f0';
+  ctx.beginPath();
+  ctx.moveTo(sx + dir * 18, sy + bob);           // bow tip
+  ctx.lineTo(sx + dir * 8, sy - 4 + bob);        // bow top
+  ctx.lineTo(sx - dir * 14, sy - 3 + bob);       // stern top
+  ctx.lineTo(sx - dir * 14, sy + 2 + bob);       // stern bottom
+  ctx.lineTo(sx + dir * 8, sy + 3 + bob);        // bow bottom
+  ctx.closePath();
+  ctx.fill();
+
+  // Windshield
+  ctx.fillStyle = '#aff';
+  ctx.fillRect(sx + dir * 2 - 2, sy - 6 + bob, 4, 3);
+
+  // Crew member 1 — gunner standing with weapon
+  const armAnim = Math.sin(sb.frame * 6) * 1;
+  ctx.strokeStyle = '#ff0';
+  ctx.lineWidth = 1.5;
+  // Body
+  ctx.beginPath();
+  ctx.moveTo(sx - dir * 2, sy - 5 + bob);   // feet
+  ctx.lineTo(sx - dir * 2, sy - 11 + bob);  // torso
+  ctx.stroke();
+  // Head
+  ctx.beginPath();
+  ctx.arc(sx - dir * 2, sy - 13 + bob, 2, 0, Math.PI * 2);
+  ctx.stroke();
+  // Arms holding gun up
+  ctx.beginPath();
+  ctx.moveTo(sx - dir * 2, sy - 9 + bob);
+  ctx.lineTo(sx - dir * 2 + dir * 4, sy - 12 + bob + armAnim);
+  ctx.stroke();
+  // Gun
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(sx - dir * 2 + dir * 4, sy - 12 + bob + armAnim);
+  ctx.lineTo(sx - dir * 2 + dir * 4, sy - 16 + bob + armAnim);
+  ctx.stroke();
+
+  // Crew member 2 — at stern
+  ctx.strokeStyle = '#ff0';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(sx - dir * 8, sy - 4 + bob);
+  ctx.lineTo(sx - dir * 8, sy - 10 + bob);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(sx - dir * 8, sy - 12 + bob, 2, 0, Math.PI * 2);
+  ctx.stroke();
+
+  clearGlow(ctx);
+}
+
 function drawBuilding(bld) {
   const col = buildingColors[bld.type] || '#fa0';
   neonGlow(ctx, col, 8);
@@ -4679,6 +5126,13 @@ function drawRadar() {
     if (!sub.alive) continue;
     rctx.fillStyle = sub.surfaced ? '#48f' : 'rgba(68, 136, 255, 0.3)';
     rctx.fillRect(sub.x * scale - 2, rH * 0.6, 4, 3);
+  }
+
+  // Speedboats
+  for (const sb of speedboats) {
+    if (!sb.alive) continue;
+    rctx.fillStyle = '#0f0';
+    rctx.fillRect(sb.x * scale - 1, rH * 0.6, 3, 2);
   }
 
   // Player
