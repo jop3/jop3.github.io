@@ -2812,13 +2812,36 @@ function updateEnemies(dt) {
     }
 
     // Collision with player (both grounded and flying enemies)
+    // Use velocity-compensated hitbox to prevent tunneling at high speeds
     if (player.invincible <= 0 && !player.burning && state === ST.PLAYING && !en.landed) {
       const spec = ENEMY_SPECS[en.type];
-      if (Math.abs(en.x - player.x) < spec.hitW + 5 && Math.abs(en.y - player.y) < spec.hitH + 3) {
+      const relVx = Math.abs(en.vx - player.vx);
+      const relVy = Math.abs(en.vy - player.vy);
+      const extraW = relVx * dt * 0.5;
+      const extraH = relVy * dt * 0.5;
+      if (Math.abs(en.x - player.x) < spec.hitW + 10 + extraW && Math.abs(en.y - player.y) < spec.hitH + 8 + extraH) {
         en.alive = false;
         addExplosion(en.x, en.y, 20, true);
         damagePlayer(3); // Collision is devastating
         launchNextFromBases();
+      }
+    }
+
+    // Enemy planes crash into buildings
+    if (en.alive && (en.state === 'flying' || en.state === 'returning')) {
+      for (const bld of buildings) {
+        if (!bld.alive) continue;
+        if (en.x > bld.x - 10 && en.x < bld.x + bld.w + 10 &&
+            en.y > bld.y - 5 && en.y < bld.y + bld.h + 5) {
+          en.alive = false;
+          bld.alive = false;
+          addExplosion(en.x, en.y, 25, true);
+          addExplosion(bld.x + bld.w / 2, bld.y + bld.h / 2, 25, true);
+          playBoom(true);
+          onBuildingDestroyed(bld);
+          launchNextFromBases();
+          break;
+        }
       }
     }
   }
