@@ -453,6 +453,8 @@ let baseX = 0;
 // ── Sea level: water line Y and island peak positions ──
 let waterLineY = 0;
 let islandPeaks = [];
+let bombScopeActive = false;
+let bombKeyWasDown = false;
 
 function generateTerrain() {
   terrain = new Float32Array(WORLD_W);
@@ -785,6 +787,21 @@ function getTerrainY(x) {
   const ix2 = (ix + 1) % WORLD_W;
   const frac = x - Math.floor(x);
   return terrain[ix] * (1 - frac) + terrain[ix2] * frac;
+}
+
+function getBombLandingPoint(px, py, pvx, pvy) {
+  let x = px, y = py + 5;
+  let vx = pvx * BOMB_VXFRAC, vy = pvy + 20;
+  const simDt = 1 / 60;
+  const maxSteps = 5 / simDt; // 5 seconds max
+  for (let i = 0; i < maxSteps; i++) {
+    x += vx * simDt;
+    y += vy * simDt;
+    vy += PROJ_GRAVITY * simDt;
+    const wx = ((x % WORLD_W) + WORLD_W) % WORLD_W;
+    if (y >= getTerrainY(wx)) return { x, y: getTerrainY(wx) };
+  }
+  return null;
 }
 
 // ── Base territory protection: no cratering within this zone ──
@@ -2465,12 +2482,21 @@ function updatePlayer(dt) {
       playShoot();
     }
 
-    // Bomb
-    if (keys['KeyB'] && p.bombCooldown <= 0 && p.bombCount > 0) {
-      bombs.push({ x: p.x, y: p.y + 5, vx: p.vx * BOMB_VXFRAC, vy: p.vy + 20, life: 5, friendly: true });
-      p.bombCount--;
-      p.bombCooldown = 0.4;
-      playBombDrop();
+    // Bomb (hold B to aim, release to drop)
+    if (keys['KeyB']) {
+      if (p.bombCooldown <= 0 && p.bombCount > 0) {
+        bombScopeActive = true;
+      }
+      bombKeyWasDown = true;
+    } else {
+      if (bombKeyWasDown && bombScopeActive) {
+        bombs.push({ x: p.x, y: p.y + 5, vx: p.vx * BOMB_VXFRAC, vy: p.vy + 20, life: 5, friendly: true });
+        p.bombCount--;
+        p.bombCooldown = 0.4;
+        playBombDrop();
+      }
+      bombScopeActive = false;
+      bombKeyWasDown = false;
     }
 
     // Depth charge (D key) — sinks through water, damages submerged subs
@@ -2747,6 +2773,8 @@ function killPlayer() {
   lives--;
   state = ST.DYING;
   deathTimer = 2.5;
+  bombScopeActive = false;
+  bombKeyWasDown = false;
 }
 
 function updateParachutes(dt) {
@@ -4439,6 +4467,38 @@ function draw() {
       drawZeppelin(ctx, en.x, en.y, drawAngle, flyingLeft, drawColor);
     } else {
       drawBiplane(ctx, en.x, en.y, drawAngle, flyingLeft, drawColor, undefined, false);
+    }
+  }
+
+  // Bomb scope reticle
+  if (bombScopeActive && state === ST.PLAYING) {
+    const landing = getBombLandingPoint(player.x, player.y, player.vx, player.vy);
+    if (landing) {
+      const t = Date.now() * 0.004;
+      const pulseR = 10 + Math.sin(t) * 3;
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = '#fa0';
+      ctx.lineWidth = 1;
+      neonGlow(ctx, '#fa0', 8);
+      ctx.beginPath();
+      ctx.moveTo(player.x, player.y);
+      ctx.lineTo(landing.x, landing.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 0.8;
+      ctx.beginPath();
+      ctx.arc(landing.x, landing.y, pulseR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(landing.x - 6, landing.y);
+      ctx.lineTo(landing.x + 6, landing.y);
+      ctx.moveTo(landing.x, landing.y - 6);
+      ctx.lineTo(landing.x, landing.y + 6);
+      ctx.stroke();
+      clearGlow(ctx);
+      ctx.restore();
     }
   }
 
