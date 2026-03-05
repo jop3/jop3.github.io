@@ -144,7 +144,16 @@ const buildingColors = { flak: '#f80', factory: '#f44', hangar: '#fa0', dam: '#4
 let enemyAccuracyDebuff = 0;
 
 // ── Level theme system ──
-const THEME_ORDER = ['land', 'sea', 'cloud', 'cave', 'normandy', 'forest'];
+const THEMES = ['land', 'sea', 'cloud', 'cave', 'normandy', 'forest'];
+let shuffledThemes = [];
+function shuffleThemes() {
+  shuffledThemes = [...THEMES];
+  for (let i = shuffledThemes.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffledThemes[i], shuffledThemes[j]] = [shuffledThemes[j], shuffledThemes[i]];
+  }
+}
+shuffleThemes();
 const THEME_CONFIG = {
   land:     { bg: '#0d1a0d', terrainColor: '#0fa', glow: '#0f8', hasWater: false, hasCeiling: false, hasCanopy: false },
   sea:      { bg: '#0a1a2a', terrainColor: '#0af', glow: '#0af', hasWater: true,  hasCeiling: false, hasCanopy: false },
@@ -153,7 +162,7 @@ const THEME_CONFIG = {
   normandy: { bg: '#1a1a0d', terrainColor: '#aa8', glow: '#cc9', hasWater: 'partial', hasCeiling: false, hasCanopy: false },
   forest:   { bg: '#0d1f0d', terrainColor: '#0a0', glow: '#0f0', hasWater: false, hasCeiling: false, hasCanopy: true }
 };
-function getLevelTheme(lvl) { return THEME_ORDER[(lvl - 1) % 6]; }
+function getLevelTheme(lvl) { return shuffledThemes[(lvl - 1) % 6]; }
 function getThemeConfig(lvl) { return THEME_CONFIG[getLevelTheme(lvl || level)]; }
 
 // ── Submarine data ──
@@ -7306,6 +7315,7 @@ function handleInput() {
     keys['Enter'] = false;
     if (state === ST.TITLE || state === ST.GAME_OVER) {
       initAudio();
+      shuffleThemes();
       level = 1;
       score = 0;
       lives = 5;
