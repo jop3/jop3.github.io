@@ -144,7 +144,7 @@ const buildingColors = { flak: '#f80', factory: '#f44', hangar: '#fa0', dam: '#4
 let enemyAccuracyDebuff = 0;
 
 // ── Level theme system ──
-const THEMES = ['land', 'sea', 'cloud', 'cave', 'normandy', 'forest'];
+const THEMES = ['land', 'sea', 'cloud', 'cave', 'normandy', 'forest', 'volcano', 'arctic', 'desert', 'city', 'space'];
 let shuffledThemes = [];
 function shuffleThemes() {
   shuffledThemes = [...THEMES];
@@ -160,9 +160,14 @@ const THEME_CONFIG = {
   cloud:    { bg: '#1a2a3a', terrainColor: '#aaf', glow: '#88f', hasWater: false, hasCeiling: false, hasCanopy: false },
   cave:     { bg: '#1a0d00', terrainColor: '#f80', glow: '#fa0', hasWater: false, hasCeiling: true,  hasCanopy: false },
   normandy: { bg: '#1a1a0d', terrainColor: '#aa8', glow: '#cc9', hasWater: 'partial', hasCeiling: false, hasCanopy: false },
-  forest:   { bg: '#0d1f0d', terrainColor: '#0a0', glow: '#0f0', hasWater: false, hasCeiling: false, hasCanopy: true }
+  forest:   { bg: '#0d1f0d', terrainColor: '#0a0', glow: '#0f0', hasWater: false, hasCeiling: false, hasCanopy: true },
+  volcano:  { bg: '#1a0800', terrainColor: '#f40', glow: '#f60', hasWater: 'lava', hasCeiling: false, hasCanopy: false },
+  arctic:   { bg: '#0a1a2a', terrainColor: '#aef', glow: '#8df', hasWater: true,  hasCeiling: false, hasCanopy: false },
+  desert:   { bg: '#1a1508', terrainColor: '#da0', glow: '#fa0', hasWater: false, hasCeiling: false, hasCanopy: false },
+  city:     { bg: '#08080f', terrainColor: '#88f', glow: '#aaf', hasWater: false, hasCeiling: false, hasCanopy: false },
+  space:    { bg: '#020208', terrainColor: '#a0f', glow: '#c0f', hasWater: false, hasCeiling: false, hasCanopy: false }
 };
-function getLevelTheme(lvl) { return shuffledThemes[(lvl - 1) % 6]; }
+function getLevelTheme(lvl) { return shuffledThemes[(lvl - 1) % THEMES.length]; }
 function getThemeConfig(lvl) { return THEME_CONFIG[getLevelTheme(lvl || level)]; }
 
 // ── Submarine data ──
@@ -181,6 +186,47 @@ let tanks = [];
 let barrageBalloons = [];
 let aaGuns = [];
 let trains = [];
+
+// ── New theme data (volcano, arctic, desert, city, space) ──
+let lavaGeysers = [];      // volcano: erupting fire columns
+let ashClouds = [];        // volcano: drifting visibility reducers
+let lavaLineY = 0;         // volcano: lava surface Y
+let icebergs = [];         // arctic: floating ice obstacles
+let windGusts = [];        // arctic: blizzard pushes
+let auroraPhase = 0;       // arctic: northern lights animation
+let sandstorms = [];       // desert: scrolling sand bands
+let mirages = [];          // desert: fake enemies
+let pyramids = [];         // desert: obstacle landmarks
+let cityBuildings = [];    // city: skyscraper obstacles
+let searchlightBeams = []; // city: sweeping hunt lights
+let asteroids = [];        // space: floating rock obstacles
+let spaceStations = [];    // space: enemy bases
+let spacePlatforms = [];   // space: orbital platform terrain
+
+// ── Wingman system ──
+let wingmen = [];          // { x, y, vx, vy, angleIdx, hp, fireTimer, alive }
+const MAX_WINGMEN = 3;
+
+// ── Weather system ──
+let weather = { type: 'clear', intensity: 0, timer: 0, windX: 0, fogDensity: 0 };
+const WEATHER_TYPES = ['clear', 'rain', 'lightning', 'fog', 'wind'];
+let lightningFlash = 0;    // screen flash timer
+let lightningBolt = null;  // { x, y, segments }
+
+// ── Ace nemesis system ──
+let aceNemesis = null;     // { name, escapes, plane, taunts, active, squadSize }
+const ACE_NAMES = ['RED BARON', 'IRON HAWK', 'SHADOW ACE', 'GHOST PILOT', 'STORM RIDER'];
+const ACE_TAUNTS = ['YOU CANNOT ESCAPE ME!', 'IS THAT ALL YOU HAVE?', 'PATHETIC!', 'I WILL END YOU!', 'FLY FASTER, COWARD!'];
+let nemesisTaunt = null;   // { text, timer }
+
+// ── Supply drop system ──
+let supplyDrops = [];      // { x, y, vy, type, deployed, collected }
+const SUPPLY_TYPES = ['twin_guns', 'rear_gunner', 'armor', 'napalm', 'speed_boost'];
+let activeSupply = null;   // { type, timer }
+let supplyDropTimer = 0;   // countdown to next drop
+
+// ── Carrier landing system ──
+let carrierLanding = null; // { active, carrierX, carrierY, carrierSpeed, phase, score }
 
 // ── Sopwith-style flight model ──
 // 16 discrete angles (like original), speed scalar, gravity table
@@ -478,6 +524,11 @@ function generateTerrain() {
   else if (theme === 'cave') generateCaveTerrain(groundBase);
   else if (theme === 'normandy') generateNormandyTerrain(groundBase);
   else if (theme === 'forest') generateForestTerrain(groundBase);
+  else if (theme === 'volcano') generateVolcanoTerrain(groundBase);
+  else if (theme === 'arctic') generateArcticTerrain(groundBase);
+  else if (theme === 'desert') generateDesertTerrain(groundBase);
+  else if (theme === 'city') generateCityTerrain(groundBase);
+  else if (theme === 'space') generateSpaceTerrain(groundBase);
   else generateLandTerrain(groundBase);
 }
 
@@ -783,6 +834,268 @@ function generateForestTerrain(groundBase) {
   addBarrierMountains(groundBase);
 }
 
+// ── Volcano terrain ──
+function generateVolcanoTerrain(groundBase) {
+  lavaLineY = groundBase + 40;
+  islandPeaks = [];
+
+  // Base: lava river at bottom
+  for (let x = 0; x < WORLD_W; x++) terrain[x] = lavaLineY;
+
+  // Rocky volcanic terrain with ridges
+  const numRidges = 6 + Math.floor(Math.random() * 4);
+  const ridgeSpacing = WORLD_W / (numRidges + 2);
+  for (let i = 0; i < numRidges; i++) {
+    let cx = Math.floor(ridgeSpacing * (i + 1) + (Math.random() - 0.5) * ridgeSpacing * 0.5);
+    if (Math.abs(cx - baseX - BASE_WIDTH / 2) < 800) continue;
+    const ridgeW = 250 + Math.floor(Math.random() * 350);
+    const ridgeH = 60 + Math.random() * 80;
+    for (let dx = -ridgeW / 2; dx <= ridgeW / 2; dx++) {
+      const ix = Math.floor(((cx + dx) % WORLD_W + WORLD_W) % WORLD_W);
+      const factor = Math.cos((dx / (ridgeW / 2)) * Math.PI * 0.5);
+      const jagged = Math.sin(dx * 0.05) * 10 + Math.sin(dx * 0.12) * 5;
+      terrain[ix] = Math.min(terrain[ix], lavaLineY - ridgeH * factor * factor + jagged);
+    }
+    islandPeaks.push({ cx, w: ridgeW, h: ridgeH });
+  }
+
+  // Geysers: random eruption points
+  lavaGeysers = [];
+  for (let i = 0; i < 8; i++) {
+    lavaGeysers.push({
+      x: 500 + Math.random() * (WORLD_W - 1000),
+      timer: Math.random() * 6,
+      interval: 4 + Math.random() * 5,
+      active: false, activeTimer: 0, height: 100 + Math.random() * 150
+    });
+  }
+
+  // Ash clouds
+  ashClouds = [];
+  for (let i = 0; i < 5; i++) {
+    ashClouds.push({
+      x: Math.random() * WORLD_W, y: 80 + Math.random() * 200,
+      w: 200 + Math.random() * 300, speed: 20 + Math.random() * 30
+    });
+  }
+
+  // Flatten base
+  const flatY = lavaLineY - 25;
+  const flatStart = baseX - 150;
+  const flatEnd = baseX + BASE_WIDTH + 400;
+  for (let x = Math.max(0, flatStart - 80); x < Math.min(WORLD_W, flatEnd + 80); x++) {
+    if (x >= flatStart && x <= flatEnd) terrain[x] = flatY;
+    else if (x < flatStart) { const t = (flatStart - x) / 80; terrain[x] = flatY * (1 - t) + terrain[x] * t; }
+    else { const t = (x - flatEnd) / 80; terrain[x] = flatY * (1 - t) + terrain[x] * t; }
+  }
+  waterLineY = lavaLineY; // reuse waterLineY for building placement logic
+  addBarrierMountains(lavaLineY - 80);
+}
+
+// ── Arctic terrain ──
+function generateArcticTerrain(groundBase) {
+  waterLineY = groundBase + 30;
+  islandPeaks = [];
+
+  // Frozen ocean base
+  for (let x = 0; x < WORLD_W; x++) terrain[x] = waterLineY;
+
+  // Icebergs: large frozen landmasses
+  const numIce = 7 + Math.floor(Math.random() * 4);
+  const iceSpacing = WORLD_W / (numIce + 2);
+  for (let i = 0; i < numIce; i++) {
+    let cx = Math.floor(iceSpacing * (i + 1) + (Math.random() - 0.5) * iceSpacing * 0.5);
+    if (Math.abs(cx - baseX - BASE_WIDTH / 2) < 800) continue;
+    const iceW = 200 + Math.floor(Math.random() * 400);
+    const iceH = 40 + Math.random() * 70;
+    for (let dx = -iceW / 2; dx <= iceW / 2; dx++) {
+      const ix = Math.floor(((cx + dx) % WORLD_W + WORLD_W) % WORLD_W);
+      const factor = Math.cos((dx / (iceW / 2)) * Math.PI * 0.5);
+      // Angular jagged ice shapes
+      const jagged = Math.abs(Math.sin(dx * 0.08)) * 15;
+      terrain[ix] = Math.min(terrain[ix], waterLineY - iceH * factor * factor - jagged);
+    }
+    islandPeaks.push({ cx, w: iceW, h: iceH });
+  }
+
+  // Wind gusts
+  windGusts = [];
+  for (let i = 0; i < 3; i++) {
+    windGusts.push({
+      x: Math.random() * WORLD_W, w: 600 + Math.random() * 800,
+      force: (Math.random() < 0.5 ? -1 : 1) * (40 + Math.random() * 60),
+      timer: 3 + Math.random() * 5, active: true
+    });
+  }
+
+  // Flatten base on ice shelf
+  const flatY = waterLineY - 20;
+  const flatStart = baseX - 150;
+  const flatEnd = baseX + BASE_WIDTH + 400;
+  for (let x = Math.max(0, flatStart - 80); x < Math.min(WORLD_W, flatEnd + 80); x++) {
+    if (x >= flatStart && x <= flatEnd) terrain[x] = flatY;
+    else if (x < flatStart) { const t = (flatStart - x) / 80; terrain[x] = flatY * (1 - t) + terrain[x] * t; }
+    else { const t = (x - flatEnd) / 80; terrain[x] = flatY * (1 - t) + terrain[x] * t; }
+  }
+  addBarrierMountains(waterLineY - 60);
+}
+
+// ── Desert terrain ──
+function generateDesertTerrain(groundBase) {
+  // Rolling dunes
+  for (let x = 0; x < WORLD_W; x++) {
+    let h = 0;
+    h += Math.sin(x * 0.001) * 80;      // big dunes
+    h += Math.sin(x * 0.004 + 1.7) * 40; // medium dunes
+    h += Math.sin(x * 0.01 + 3.2) * 15;  // ripples
+    terrain[x] = groundBase + h;
+  }
+
+  // Pyramids
+  pyramids = [];
+  for (let i = 0; i < 4; i++) {
+    const px = 1500 + i * 2800 + Math.floor(Math.random() * 500);
+    if (Math.abs(px - baseX) < 600) continue;
+    const pw = 120 + Math.random() * 80;
+    const ph = 80 + Math.random() * 60;
+    pyramids.push({ x: px, w: pw, h: ph });
+    // Flatten terrain under pyramid
+    const ty = getTerrainY(px);
+    for (let dx = -pw / 2 - 20; dx <= pw / 2 + 20; dx++) {
+      const ix = Math.floor(((px + dx) % WORLD_W + WORLD_W) % WORLD_W);
+      if (ix >= 0 && ix < WORLD_W) terrain[ix] = ty;
+    }
+  }
+
+  // Sandstorms
+  sandstorms = [];
+  for (let i = 0; i < 3; i++) {
+    sandstorms.push({
+      x: Math.random() * WORLD_W, w: 400 + Math.random() * 600,
+      speed: 60 + Math.random() * 40, opacity: 0.2 + Math.random() * 0.3
+    });
+  }
+
+  // Mirages
+  mirages = [];
+  for (let i = 0; i < 4; i++) {
+    mirages.push({
+      x: 1000 + Math.random() * (WORLD_W - 2000),
+      y: groundBase - 100 - Math.random() * 100,
+      shimmer: Math.random() * Math.PI * 2, alive: true
+    });
+  }
+
+  // Flatten base
+  const flatY = groundBase;
+  const flatStart = baseX - 150;
+  const flatEnd = baseX + BASE_WIDTH + 400;
+  for (let x = Math.max(0, flatStart - 80); x < Math.min(WORLD_W, flatEnd + 80); x++) {
+    if (x >= flatStart && x <= flatEnd) terrain[x] = flatY;
+    else if (x < flatStart) { const t = (flatStart - x) / 80; terrain[x] = flatY * (1 - t) + terrain[x] * t; }
+    else { const t = (x - flatEnd) / 80; terrain[x] = flatY * (1 - t) + terrain[x] * t; }
+  }
+
+  waterLineY = 0;
+  islandPeaks = [];
+  addBarrierMountains(groundBase);
+}
+
+// ── City terrain ──
+function generateCityTerrain(groundBase) {
+  // Flat cityscape ground
+  const cityFloor = groundBase + 10;
+  for (let x = 0; x < WORLD_W; x++) {
+    terrain[x] = cityFloor + Math.sin(x * 0.001) * 5; // nearly flat
+  }
+
+  // Skyscrapers as obstacles
+  cityBuildings = [];
+  let lastBldX = 400;
+  while (lastBldX < WORLD_W - 400) {
+    if (Math.abs(lastBldX - baseX) < 500) { lastBldX += 500; continue; }
+    const bw = 30 + Math.random() * 50;
+    const bh = 80 + Math.random() * 180;
+    const floors = Math.floor(bh / 20);
+    cityBuildings.push({
+      x: lastBldX, y: cityFloor - bh, w: bw, h: bh,
+      floors, lit: Array.from({ length: floors * 3 }, () => Math.random() < 0.6),
+      color: ['#48f', '#f80', '#fa0', '#0ff', '#f0f'][Math.floor(Math.random() * 5)],
+      alive: true, hp: 3
+    });
+    lastBldX += bw + 100 + Math.random() * 200;
+  }
+
+  // Searchlight beams
+  searchlightBeams = [];
+  for (let i = 0; i < 6; i++) {
+    const cb = cityBuildings[Math.floor(Math.random() * cityBuildings.length)];
+    if (cb) searchlightBeams.push({
+      x: cb.x + cb.w / 2, y: cb.y, angle: Math.random() * Math.PI,
+      speed: 0.3 + Math.random() * 0.5, range: 250 + Math.random() * 150
+    });
+  }
+
+  // Flatten base
+  const flatStart = baseX - 150;
+  const flatEnd = baseX + BASE_WIDTH + 400;
+  for (let x = Math.max(0, flatStart - 80); x < Math.min(WORLD_W, flatEnd + 80); x++) {
+    if (x >= flatStart && x <= flatEnd) terrain[x] = cityFloor;
+    else if (x < flatStart) { const t = (flatStart - x) / 80; terrain[x] = cityFloor * (1 - t) + terrain[x] * t; }
+    else { const t = (x - flatEnd) / 80; terrain[x] = cityFloor * (1 - t) + terrain[x] * t; }
+  }
+
+  waterLineY = 0;
+  islandPeaks = [];
+  addBarrierMountains(cityFloor);
+}
+
+// ── Space terrain ──
+function generateSpaceTerrain(groundBase) {
+  // No ground — void below. Like cloud but with platforms
+  const voidFloor = canvas.height + 800;
+  for (let x = 0; x < WORLD_W; x++) terrain[x] = voidFloor;
+
+  // Orbital platforms as landing spots
+  spacePlatforms = [];
+  for (let i = 0; i < 8; i++) {
+    const px = 800 + i * 1400 + Math.floor(Math.random() * 400);
+    const pw = 100 + Math.random() * 80;
+    const py = canvas.height * 0.5 + (Math.random() - 0.5) * 200;
+    spacePlatforms.push({ x: px, y: py, w: pw });
+    // Create terrain at platform position
+    for (let dx = 0; dx < pw; dx++) {
+      const ix = Math.floor(((px + dx) % WORLD_W + WORLD_W) % WORLD_W);
+      if (ix >= 0 && ix < WORLD_W) terrain[ix] = py;
+    }
+  }
+
+  // Asteroids
+  asteroids = [];
+  for (let i = 0; i < 15; i++) {
+    asteroids.push({
+      x: Math.random() * WORLD_W,
+      y: 50 + Math.random() * (canvas.height * 0.7),
+      r: 8 + Math.random() * 20,
+      vx: (Math.random() - 0.5) * 30,
+      vy: (Math.random() - 0.5) * 15,
+      rotation: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 2
+    });
+  }
+
+  // Base platform
+  const basePy = canvas.height * 0.6;
+  baseX = Math.floor(WORLD_W / 2 - BASE_WIDTH / 2);
+  for (let x = baseX - 80; x < baseX + BASE_WIDTH + 80; x++) {
+    const ix = Math.floor(((x % WORLD_W) + WORLD_W) % WORLD_W);
+    if (ix >= 0 && ix < WORLD_W) terrain[ix] = basePy;
+  }
+
+  waterLineY = 0;
+  islandPeaks = [];
+}
+
 function getCanopyY(x) {
   if (!canopyHeight) return 9999;
   const ix = Math.floor(((x % WORLD_W) + WORLD_W) % WORLD_W);
@@ -830,14 +1143,14 @@ let fleeingPeople, dragons;
 let shockwaves = []; // underwater depth charge shockwaves
 
 function initPlayer() {
-  const isCloud = getLevelTheme(level) === 'cloud';
+  const isAirStart = getLevelTheme(level) === 'cloud' || getLevelTheme(level) === 'space';
   const ty = getTerrainY(baseX + BASE_WIDTH / 2);
   player = {
-    x: isCloud ? WORLD_W / 2 : baseX + BASE_WIDTH / 2,
-    y: isCloud ? canvas.height * 0.3 : ty - 30,
+    x: isAirStart ? WORLD_W / 2 : baseX + BASE_WIDTH / 2,
+    y: isAirStart ? canvas.height * 0.3 : ty - 30,
     // Sopwith-style: single speed scalar + angle index
-    speed: isCloud ? PLANE_MAX_SPEED : 0,
-    accel: isCloud ? PLANE_MAX_ACCEL : 0,
+    speed: isAirStart ? PLANE_MAX_SPEED : 0,
+    accel: isAirStart ? PLANE_MAX_ACCEL : 0,
     angleIdx: 0,          // 0=right, 4=up, 8=left, 12=down (16 steps)
     orient: false,        // upside-down (true = inverted, like ob_orient in original Sopwith)
     stalled: false,       // in stall state
@@ -851,8 +1164,8 @@ function initPlayer() {
     fireCooldown: 0,
     bombCooldown: 0,
     depthChargeCooldown: 0,
-    invincible: isCloud ? 2 : 0, // brief invincibility on cloud spawn
-    landed: !isCloud,     // cloud: start airborne
+    invincible: isAirStart ? 2 : 0, // brief invincibility on air spawn
+    landed: !isAirStart,     // cloud/space: start airborne
     autopilot: false,
     hp: PLAYER_MAX_HP,
     wounded: false,        // damaged but flyable — controls respond every other frame
@@ -887,6 +1200,14 @@ function spawnBuildings() {
     addW('flak', 2); addW('bunker', 2); addW('observation_tower', 3); addW('radar_station', 2); addW('fuel_depot', 2);
   } else if (theme === 'cloud') {
     addW('flak', 3); addW('bunker', 2); addW('radar_station', 2); addW('fuel_depot', 2);
+  } else if (theme === 'volcano') {
+    addW('bunker', 3); addW('flak', 3); addW('fuel_depot', 2); addW('heavyBunker', 2);
+  } else if (theme === 'arctic') {
+    addW('bunker', 3); addW('flak', 2); addW('radar_station', 2); addW('fuel_depot', 3);
+  } else if (theme === 'desert') {
+    addW('bunker', 2); addW('flak', 3); addW('radar_station', 2); addW('observation_tower', 2);
+  } else if (theme === 'city') {
+    addW('flak', 3); addW('radar_station', 3); addW('bunker', 2); addW('fuel_depot', 2);
   } else {
     addW('hangar', 3); addW('factory', 3); addW('flak', 3);
     if (level >= 2) { addW('bunker', 2); addW('fuel_depot', 2); }
@@ -930,7 +1251,7 @@ function spawnBuildings() {
     return w;
   }
 
-  if (theme === 'sea' || (theme === 'normandy' && islandPeaks.length > 0)) {
+  if (theme === 'sea' || theme === 'arctic' || theme === 'volcano' || (theme === 'normandy' && islandPeaks.length > 0)) {
     // Sea/normandy levels: place buildings on islands or elevated terrain
     let placed = 0;
     for (const island of islandPeaks) {
@@ -1000,7 +1321,7 @@ let enemyBases = []; // { x, width } — enemy landing fields
 function spawnEnemyBases() {
   enemyBases = [];
   const theme = getLevelTheme(level);
-  const needsIsland = theme === 'sea' || theme === 'normandy';
+  const needsIsland = theme === 'sea' || theme === 'normandy' || theme === 'arctic' || theme === 'volcano';
 
   // Always place enemy airfields at world edges — both land and sea levels
   const positions = [300, WORLD_W - 300 - BASE_WIDTH];
@@ -1345,27 +1666,41 @@ function initLevel() {
   barrageBalloons = [];
   aaGuns = [];
   trains = [];
+  supplyDrops = [];
+  supplyDropTimer = 15 + Math.random() * 15;
+  carrierLanding = null;
+  lightningFlash = 0;
+  lightningBolt = null;
+  nemesisTaunt = null;
   enemyAccuracyDebuff = 0;
+
+  // Roll weather for this level
+  initWeather();
 
   const theme = getLevelTheme(level);
   const tc = THEME_CONFIG[theme];
 
-  if (theme === 'cloud') {
-    // Cloud: pure air combat — no buildings, no ground entities
+  if (theme === 'cloud' || theme === 'space') {
+    // Air/space combat — no buildings, no ground entities
     buildings = [];
     oxen = [];
     speedboats = [];
     submarines = [];
-    spawnCloudEnemies();
-    spawnFuelTankers();
-    return; // skip all ground-based spawning
+    if (theme === 'cloud') {
+      spawnCloudEnemies();
+      spawnFuelTankers();
+    } else {
+      spawnSpaceEnemies();
+    }
+    spawnAceNemesis();
+    return;
   }
 
   spawnBuildings();
   spawnEnemies();
 
   // Animals only on ground-based themes without water
-  if (theme === 'land' || theme === 'forest') {
+  if (theme === 'land' || theme === 'forest' || theme === 'desert') {
     spawnAnimals();
   } else {
     oxen = [];
@@ -1376,8 +1711,10 @@ function initLevel() {
     spawnSubmarines();
     spawnSpeedboats();
   } else if (tc.hasWater === 'partial') {
-    // Normandy has partial water — spawn some speedboats
     spawnSpeedboats();
+    submarines = [];
+  } else if (tc.hasWater === 'lava') {
+    speedboats = [];
     submarines = [];
   } else {
     speedboats = [];
@@ -1394,10 +1731,913 @@ function initLevel() {
   } else if (theme === 'forest') {
     spawnAAGuns();
     spawnTrains();
+  } else if (theme === 'city') {
+    // City uses cityBuildings as obstacles, plus searchlights
+  } else if (theme === 'desert') {
+    // Desert uses pyramids, sandstorms, mirages from terrain gen
   }
 
   spawnBirds();
   spawnDragons();
+  spawnAceNemesis();
+}
+
+// ── Space enemy spawning ──
+function spawnSpaceEnemies() {
+  enemies = [];
+  enemyBases = [];
+  const count = 5 + level * 2;
+  for (let i = 0; i < count; i++) {
+    let type = 'biplane';
+    const r = Math.random();
+    if (r < 0.25) type = 'ace';
+    else if (r < 0.45) type = 'jet';
+    else if (r < 0.55) type = 'bomber';
+    const spec = ENEMY_SPECS[type];
+    enemies.push({
+      x: 500 + Math.random() * (WORLD_W - 1000),
+      y: 80 + Math.random() * (canvas.height * 0.5),
+      vx: (Math.random() < 0.5 ? 1 : -1) * spec.speed, vy: 0,
+      angle: Math.random() < 0.5 ? 0 : Math.PI,
+      hp: spec.hp, alive: true,
+      fireTimer: Math.random() * spec.fireInterval | 0,
+      type, speed: spec.speed, stalled: false, stallTimer: 0,
+      burning: false, burnTimer: 0,
+      patrolDir: Math.random() < 0.5 ? 1 : -1,
+      parkSlot: i, fuel: 9999, landed: false,
+      homeBase: null, takeoffTimer: 0, state: 'flying'
+    });
+  }
+}
+
+// ── Weather system ──
+function initWeather() {
+  const theme = getLevelTheme(level);
+  // Some themes have forced weather
+  if (theme === 'arctic') { weather = { type: 'wind', intensity: 0.7, timer: 999, windX: 60 + Math.random() * 40, fogDensity: 0.15 }; return; }
+  if (theme === 'desert') { weather = { type: 'wind', intensity: 0.4, timer: 999, windX: 30, fogDensity: 0 }; return; }
+  // Random weather roll for other themes
+  const r = Math.random();
+  if (r < 0.3) weather = { type: 'clear', intensity: 0, timer: 999, windX: 0, fogDensity: 0 };
+  else if (r < 0.5) weather = { type: 'rain', intensity: 0.5 + Math.random() * 0.5, timer: 999, windX: 0, fogDensity: 0.05 };
+  else if (r < 0.65) weather = { type: 'lightning', intensity: 0.6, timer: 999, windX: 0, fogDensity: 0.1 };
+  else if (r < 0.8) weather = { type: 'fog', intensity: 0.6 + Math.random() * 0.3, timer: 999, windX: 0, fogDensity: 0.3 + Math.random() * 0.3 };
+  else weather = { type: 'wind', intensity: 0.5, timer: 999, windX: (Math.random() < 0.5 ? -1 : 1) * (30 + Math.random() * 40), fogDensity: 0 };
+}
+
+function updateWeather(dt) {
+  if (weather.type === 'lightning') {
+    weather.timer -= dt;
+    if (weather.timer <= 0) {
+      weather.timer = 3 + Math.random() * 8;
+      // Lightning strike!
+      lightningFlash = 0.3;
+      const lx = camX + Math.random() * canvas.width;
+      const ly = 0;
+      const segs = [];
+      let sx = lx, sy = ly;
+      while (sy < getTerrainY(sx)) {
+        const nx = sx + (Math.random() - 0.5) * 40;
+        const ny = sy + 20 + Math.random() * 30;
+        segs.push({ x1: sx, y1: sy, x2: nx, y2: ny });
+        sx = nx; sy = ny;
+      }
+      lightningBolt = { segments: segs, timer: 0.2 };
+      // Damage anything near the strike point
+      const strikeX = sx, strikeY = sy;
+      if (Math.abs(player.x - strikeX) < 30 && Math.abs(player.y - strikeY) < 30) damagePlayer(1);
+      for (const en of enemies) {
+        if (en.alive && Math.abs(en.x - strikeX) < 30 && Math.abs(en.y - strikeY) < 30) {
+          en.hp -= 2; if (en.hp <= 0) { startEnemyBurn(en); }
+        }
+      }
+      addExplosion(strikeX, strikeY, 15, true);
+    }
+  }
+  if (lightningFlash > 0) lightningFlash -= dt;
+  if (lightningBolt) { lightningBolt.timer -= dt; if (lightningBolt.timer <= 0) lightningBolt = null; }
+
+  // Wind pushes player
+  if (weather.type === 'wind' && state === ST.PLAYING && !player.landed) {
+    player.x += weather.windX * dt * 0.3;
+  }
+}
+
+function drawWeather(W, H) {
+  if (weather.type === 'rain') {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.strokeStyle = `rgba(100, 180, 255, ${0.3 * weather.intensity})`;
+    ctx.lineWidth = 1;
+    const now = Date.now();
+    for (let i = 0; i < 80 * weather.intensity; i++) {
+      const rx = (Math.sin(i * 73.7 + now * 0.001) * 0.5 + 0.5) * W;
+      const ry = ((i * 37.3 + now * 0.4) % (H + 40)) - 20;
+      ctx.beginPath();
+      ctx.moveTo(rx, ry);
+      ctx.lineTo(rx - 2, ry + 12);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  if (weather.type === 'fog' || weather.fogDensity > 0) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = `rgba(150, 160, 180, ${weather.fogDensity * 0.4})`;
+    ctx.fillRect(0, 0, W, H);
+    // Fog wisps
+    const now = Date.now();
+    ctx.fillStyle = `rgba(180, 190, 200, ${weather.fogDensity * 0.15})`;
+    for (let i = 0; i < 5; i++) {
+      const fx = (Math.sin(now * 0.0002 + i * 2.3) * 0.5 + 0.5) * W;
+      const fy = H * 0.3 + i * H * 0.12;
+      ctx.beginPath();
+      ctx.ellipse(fx, fy, 200 + i * 30, 30, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  if (lightningFlash > 0) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = `rgba(255, 255, 255, ${lightningFlash})`;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+
+  if (lightningBolt) {
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 3;
+    neonGlow(ctx, '#88f', 15);
+    ctx.beginPath();
+    for (const s of lightningBolt.segments) {
+      ctx.moveTo(s.x1, s.y1);
+      ctx.lineTo(s.x2, s.y2);
+    }
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#aaf';
+    ctx.beginPath();
+    for (const s of lightningBolt.segments) {
+      ctx.moveTo(s.x1 + (Math.random() - 0.5) * 8, s.y1);
+      ctx.lineTo(s.x2 + (Math.random() - 0.5) * 8, s.y2);
+    }
+    ctx.stroke();
+    clearGlow(ctx);
+  }
+
+  // Wind streaks
+  if (weather.type === 'wind') {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.strokeStyle = `rgba(200, 220, 255, 0.15)`;
+    ctx.lineWidth = 0.5;
+    const now = Date.now();
+    const dir = weather.windX > 0 ? 1 : -1;
+    for (let i = 0; i < 20; i++) {
+      const sx = ((i * 137.3 + now * Math.abs(weather.windX) * 0.01) % (W + 100)) - 50;
+      const sy = (i * 47.7) % H;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + dir * (20 + Math.abs(weather.windX) * 0.5), sy);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+// ── Ace Nemesis system ──
+function spawnAceNemesis() {
+  if (!aceNemesis) {
+    aceNemesis = {
+      name: ACE_NAMES[Math.floor(Math.random() * ACE_NAMES.length)],
+      escapes: 0, active: false, squadSize: 0
+    };
+  }
+  // Appears every 3rd level or if escaped before
+  if (level % 3 === 0 || aceNemesis.escapes > 0) {
+    aceNemesis.active = true;
+    aceNemesis.squadSize = Math.min(aceNemesis.escapes, 3);
+    // Spawn the nemesis as a special enemy
+    const spec = ENEMY_SPECS.ace;
+    const nemHP = 4 + aceNemesis.escapes * 2; // gets tougher each escape
+    const nemSpeed = 300 + aceNemesis.escapes * 30;
+    const nemX = player.x > WORLD_W / 2 ? 1000 : WORLD_W - 1000;
+    enemies.push({
+      x: nemX, y: 120 + Math.random() * 80,
+      vx: nemX < WORLD_W / 2 ? nemSpeed : -nemSpeed, vy: 0,
+      angle: nemX < WORLD_W / 2 ? 0 : Math.PI,
+      hp: nemHP, alive: true,
+      fireTimer: 10, type: 'ace', speed: nemSpeed,
+      stalled: false, stallTimer: 0, burning: false, burnTimer: 0,
+      patrolDir: nemX < WORLD_W / 2 ? 1 : -1, parkSlot: -1,
+      fuel: 9999, landed: false, homeBase: null,
+      takeoffTimer: 0, state: 'flying',
+      isNemesis: true // tag for special behavior
+    });
+    // Squad wingmen
+    for (let i = 0; i < aceNemesis.squadSize; i++) {
+      enemies.push({
+        x: nemX + (i + 1) * 50, y: 140 + i * 30 + Math.random() * 40,
+        vx: nemX < WORLD_W / 2 ? spec.speed : -spec.speed, vy: 0,
+        angle: nemX < WORLD_W / 2 ? 0 : Math.PI,
+        hp: spec.hp + 1, alive: true,
+        fireTimer: Math.random() * spec.fireInterval | 0,
+        type: 'ace', speed: spec.speed,
+        stalled: false, stallTimer: 0, burning: false, burnTimer: 0,
+        patrolDir: nemX < WORLD_W / 2 ? 1 : -1, parkSlot: -2,
+        fuel: 9999, landed: false, homeBase: null,
+        takeoffTimer: 0, state: 'flying'
+      });
+    }
+    // Taunt on spawn
+    nemesisTaunt = { text: `${aceNemesis.name}: ${ACE_TAUNTS[Math.floor(Math.random() * ACE_TAUNTS.length)]}`, timer: 3 };
+  }
+}
+
+function checkNemesisEscape() {
+  if (!aceNemesis || !aceNemesis.active) return;
+  const nem = enemies.find(e => e.isNemesis);
+  if (!nem) return;
+  if (!nem.alive) {
+    // Nemesis killed!
+    aceNemesis.active = false;
+    aceNemesis.escapes = 0; // reset
+    score += 2000;
+    awardMedal('ace');
+    nemesisTaunt = { text: `${aceNemesis.name} DEFEATED! +2000`, timer: 3 };
+    aceNemesis.name = ACE_NAMES[Math.floor(Math.random() * ACE_NAMES.length)]; // new nemesis next time
+    return;
+  }
+  // Check if nemesis flew off map edges
+  if (nem.x < -200 || nem.x > WORLD_W + 200) {
+    aceNemesis.escapes++;
+    aceNemesis.active = false;
+    nem.alive = false;
+    nemesisTaunt = { text: `${aceNemesis.name} ESCAPED! (${aceNemesis.escapes}x)`, timer: 3 };
+  }
+}
+
+// ── Wingman system ──
+function addWingman() {
+  if (wingmen.length >= MAX_WINGMEN) return;
+  wingmen.push({
+    x: player.x - 40 - wingmen.length * 30,
+    y: player.y + 20 + wingmen.length * 15,
+    vx: player.vx, vy: player.vy,
+    angleIdx: player.angleIdx,
+    hp: 2, fireTimer: 0, alive: true
+  });
+}
+
+function updateWingmen(dt) {
+  for (let i = wingmen.length - 1; i >= 0; i--) {
+    const w = wingmen[i];
+    if (!w.alive) { wingmen.splice(i, 1); continue; }
+    // Follow player in formation
+    const targetX = player.x - 40 - i * 35;
+    const targetY = player.y + 20 + i * 15;
+    w.vx += (targetX - w.x) * 3 * dt;
+    w.vy += (targetY - w.y) * 3 * dt;
+    w.vx *= 0.95; w.vy *= 0.95;
+    w.x += w.vx * dt * 60;
+    w.y += w.vy * dt * 60;
+    w.angleIdx = player.angleIdx;
+
+    // Fire at nearby enemies
+    w.fireTimer -= dt;
+    if (w.fireTimer <= 0) {
+      let closest = null, closestDist = 400;
+      for (const en of enemies) {
+        if (!en.alive) continue;
+        const d = Math.hypot(en.x - w.x, en.y - w.y);
+        if (d < closestDist) { closestDist = d; closest = en; }
+      }
+      if (closest) {
+        const angle = Math.atan2(closest.y - w.y, closest.x - w.x);
+        bullets.push({
+          x: w.x, y: w.y,
+          vx: Math.cos(angle) * BULLET_SPEED * 0.8,
+          vy: Math.sin(angle) * BULLET_SPEED * 0.8,
+          friendly: true, life: 1.5
+        });
+        w.fireTimer = 0.4;
+      } else {
+        w.fireTimer = 0.1;
+      }
+    }
+
+    // Take damage from enemy bullets
+    for (let j = bullets.length - 1; j >= 0; j--) {
+      const b = bullets[j];
+      if (b.friendly) continue;
+      if (Math.abs(b.x - w.x) < 15 && Math.abs(b.y - w.y) < 10) {
+        w.hp--;
+        bullets.splice(j, 1);
+        if (w.hp <= 0) {
+          w.alive = false;
+          addExplosion(w.x, w.y, 20, true);
+        }
+        break;
+      }
+    }
+  }
+}
+
+function drawWingmen() {
+  for (const w of wingmen) {
+    if (!w.alive) continue;
+    const rad = -w.angleIdx * ANGLE_STEP;
+    drawBiplane(ctx, w.x, w.y, rad, false, '#0af', 0.8);
+  }
+}
+
+// ── Supply drop system ──
+function updateSupplyDrops(dt) {
+  supplyDropTimer -= dt;
+  // Spawn supply drops periodically in dangerous areas
+  if (supplyDropTimer <= 0 && state === ST.PLAYING) {
+    supplyDropTimer = 20 + Math.random() * 20;
+    // Drop near enemy territory
+    const dropX = player.x + (Math.random() < 0.5 ? -1 : 1) * (600 + Math.random() * 1500);
+    const dropY = 40;
+    const type = SUPPLY_TYPES[Math.floor(Math.random() * SUPPLY_TYPES.length)];
+    supplyDrops.push({
+      x: dropX, y: dropY, vy: 30, type,
+      deployed: false, deployTimer: 0.5, collected: false,
+      life: 30 // disappears after 30 seconds
+    });
+  }
+
+  for (let i = supplyDrops.length - 1; i >= 0; i--) {
+    const sd = supplyDrops[i];
+    if (sd.collected) { supplyDrops.splice(i, 1); continue; }
+    sd.life -= dt;
+    if (sd.life <= 0) { supplyDrops.splice(i, 1); continue; }
+    sd.deployTimer -= dt;
+    if (sd.deployTimer <= 0) sd.deployed = true;
+    if (sd.deployed) sd.vy = 25; else sd.vy = 80;
+    sd.y += sd.vy * dt;
+    // Stop at terrain
+    const ty = getTerrainY(sd.x);
+    if (sd.y >= ty - 10) sd.y = ty - 10;
+    // Player pickup
+    if (Math.abs(player.x - sd.x) < 25 && Math.abs(player.y - sd.y) < 20 && !player.burning) {
+      sd.collected = true;
+      activateSupply(sd.type);
+    }
+  }
+}
+
+function activateSupply(type) {
+  activeSupply = { type, timer: 15 }; // 15 second duration
+  nemesisTaunt = { text: `SUPPLY: ${type.replace('_', ' ').toUpperCase()}`, timer: 2 };
+}
+
+function updateActiveSupply(dt) {
+  if (!activeSupply) return;
+  activeSupply.timer -= dt;
+  if (activeSupply.timer <= 0) activeSupply = null;
+}
+
+function drawSupplyDrops() {
+  for (const sd of supplyDrops) {
+    if (sd.collected) continue;
+    const flash = Math.sin(Date.now() * 0.008) * 0.3 + 0.7;
+    // Parachute
+    if (sd.deployed) {
+      ctx.strokeStyle = `rgba(255, 255, 255, ${flash * 0.8})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(sd.x, sd.y - 15, 12, Math.PI, 0);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(sd.x - 12, sd.y - 15);
+      ctx.lineTo(sd.x - 3, sd.y - 3);
+      ctx.moveTo(sd.x + 12, sd.y - 15);
+      ctx.lineTo(sd.x + 3, sd.y - 3);
+      ctx.stroke();
+    }
+    // Crate
+    const colors = { twin_guns: '#f00', rear_gunner: '#fa0', armor: '#0af', napalm: '#f60', speed_boost: '#0f0' };
+    const col = colors[sd.type] || '#ff0';
+    neonGlow(ctx, col, 6);
+    ctx.fillStyle = col;
+    ctx.globalAlpha = flash;
+    ctx.fillRect(sd.x - 5, sd.y - 5, 10, 10);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(sd.x - 5, sd.y - 5, 10, 10);
+    // Cross on crate
+    ctx.beginPath();
+    ctx.moveTo(sd.x - 3, sd.y); ctx.lineTo(sd.x + 3, sd.y);
+    ctx.moveTo(sd.x, sd.y - 3); ctx.lineTo(sd.x, sd.y + 3);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    clearGlow(ctx);
+  }
+}
+
+// ── Carrier landing system ──
+function initCarrierLanding() {
+  const theme = getLevelTheme(level);
+  // Only activate carrier landing on certain levels
+  if (Math.random() < 0.4 || theme === 'sea' || theme === 'arctic') {
+    const cx = baseX + BASE_WIDTH / 2;
+    const cy = getTerrainY(cx);
+    carrierLanding = {
+      active: true, carrierX: cx, carrierY: cy,
+      carrierSpeed: 15 + Math.random() * 10,
+      phase: 'approach', // approach, landing, scored
+      approachScore: 0, perfect: false
+    };
+  }
+}
+
+function drawCarrierLandingHUD(W, H) {
+  if (!carrierLanding || !carrierLanding.active || carrierLanding.phase === 'scored') return;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // Approach indicator
+  const dx = player.x - carrierLanding.carrierX;
+  const dy = player.y - carrierLanding.carrierY;
+  const dist = Math.hypot(dx, dy);
+
+  if (dist < 800 && !player.landed) {
+    // Glide slope indicator
+    const idealAngle = Math.atan2(carrierLanding.carrierY - player.y, carrierLanding.carrierX - player.x);
+    const playerAngle = Math.atan2(player.vy, player.vx);
+    const angleDiff = Math.abs(idealAngle - playerAngle);
+
+    ctx.textAlign = 'center';
+    ctx.font = '12px "Courier New", monospace';
+
+    if (angleDiff < 0.3 && player.speed < 7) {
+      neonGlow(ctx, '#0f0', 6);
+      ctx.fillStyle = '#0f0';
+      ctx.fillText('ON APPROACH - GOOD', W / 2, 60);
+    } else if (angleDiff < 0.6) {
+      ctx.fillStyle = '#ff0';
+      ctx.fillText('ADJUST APPROACH', W / 2, 60);
+    } else {
+      ctx.fillStyle = '#f55';
+      ctx.fillText('OFF COURSE', W / 2, 60);
+    }
+    clearGlow(ctx);
+  }
+  ctx.restore();
+}
+
+// ── Volcano theme updates ──
+function updateVolcano(dt) {
+  // Geysers
+  for (const g of lavaGeysers) {
+    g.timer -= dt;
+    if (g.timer <= 0 && !g.active) {
+      g.active = true;
+      g.activeTimer = 1.5 + Math.random();
+    }
+    if (g.active) {
+      g.activeTimer -= dt;
+      // Fire particles shooting up
+      if (Math.random() < 0.4) {
+        const gy = getTerrainY(g.x);
+        addParticle(g.x + (Math.random() - 0.5) * 10, gy,
+          (Math.random() - 0.5) * 30, -150 - Math.random() * g.height,
+          0.6 + Math.random() * 0.3,
+          Math.random() < 0.5 ? '#f80' : '#f40', 2 + Math.random() * 2);
+      }
+      // Damage player if near geyser
+      if (!player.burning && player.invincible <= 0) {
+        const gy = getTerrainY(g.x);
+        if (Math.abs(player.x - g.x) < 20 && player.y > gy - g.height && player.y < gy) {
+          damagePlayer(1);
+        }
+      }
+      if (g.activeTimer <= 0) {
+        g.active = false;
+        g.timer = g.interval;
+      }
+    }
+  }
+  // Ash clouds drift
+  for (const ac of ashClouds) {
+    ac.x += ac.speed * dt;
+    if (ac.x > WORLD_W) ac.x -= WORLD_W;
+  }
+}
+
+function drawVolcanoEffects(startX, endX) {
+  // Lava glow on terrain
+  const now = Date.now();
+  if (lavaLineY > 0) {
+    // Lava surface
+    neonGlow(ctx, '#f40', 12);
+    ctx.strokeStyle = '#f80';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let x = startX; x <= endX; x += 3) {
+      const ly = lavaLineY + Math.sin(now * 0.002 + x * 0.01) * 3 + Math.sin(now * 0.004 + x * 0.03) * 2;
+      if (terrain[x] >= lavaLineY - 5) {
+        if (x === startX) ctx.moveTo(x, ly);
+        else ctx.lineTo(x, ly);
+      } else {
+        ctx.moveTo(x, ly);
+      }
+    }
+    ctx.stroke();
+    clearGlow(ctx);
+
+    // Lava glow fill
+    ctx.fillStyle = 'rgba(255, 80, 0, 0.08)';
+    ctx.beginPath();
+    ctx.moveTo(startX, lavaLineY);
+    ctx.lineTo(endX, lavaLineY);
+    ctx.lineTo(endX, lavaLineY + 200);
+    ctx.lineTo(startX, lavaLineY + 200);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Active geysers
+  for (const g of lavaGeysers) {
+    if (!g.active) continue;
+    const gx = g.x, gy = getTerrainY(g.x);
+    if (gx < startX - 50 || gx > endX + 50) continue;
+    neonGlow(ctx, '#f60', 10);
+    ctx.strokeStyle = '#fa0';
+    ctx.lineWidth = 3;
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(gx, gy);
+    ctx.lineTo(gx + Math.sin(now * 0.01) * 5, gy - g.height * g.activeTimer);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    clearGlow(ctx);
+  }
+
+  // Ash clouds
+  for (const ac of ashClouds) {
+    if (ac.x < startX - ac.w || ac.x > endX + ac.w) continue;
+    ctx.fillStyle = 'rgba(80, 60, 40, 0.15)';
+    ctx.beginPath();
+    ctx.ellipse(ac.x, ac.y, ac.w / 2, 30, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// ── Arctic theme updates ──
+function updateArctic(dt) {
+  auroraPhase += dt * 0.3;
+  // Wind gusts shift
+  for (const wg of windGusts) {
+    wg.timer -= dt;
+    if (wg.timer <= 0) {
+      wg.force = (Math.random() < 0.5 ? -1 : 1) * (40 + Math.random() * 60);
+      wg.timer = 3 + Math.random() * 5;
+    }
+    // Push player if in gust zone
+    if (!player.landed && Math.abs(player.x - wg.x) < wg.w / 2) {
+      player.x += wg.force * dt * 0.2;
+    }
+  }
+}
+
+function drawArcticEffects(startX, endX) {
+  // Aurora borealis
+  const now = Date.now();
+  ctx.save();
+  for (let layer = 0; layer < 4; layer++) {
+    const colors = ['rgba(0,255,100,0.06)', 'rgba(0,200,255,0.05)', 'rgba(100,0,255,0.04)', 'rgba(0,255,200,0.05)'];
+    ctx.fillStyle = colors[layer];
+    ctx.beginPath();
+    const baseY = 40 + layer * 25;
+    ctx.moveTo(startX, baseY + 30);
+    for (let x = startX; x <= endX; x += 8) {
+      const ay = baseY + Math.sin(x * 0.003 + auroraPhase + layer * 1.7) * 15
+        + Math.sin(x * 0.008 + auroraPhase * 1.3) * 8;
+      ctx.lineTo(x, ay);
+    }
+    ctx.lineTo(endX, baseY + 30);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Blizzard particles
+  ctx.fillStyle = 'rgba(220, 240, 255, 0.4)';
+  for (let i = 0; i < 30; i++) {
+    const sx = ((i * 173.7 + now * 0.15) % (endX - startX + 400)) + startX - 200;
+    const sy = ((i * 97.3 + now * 0.08) % 500) + camY;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 1 + Math.sin(i) * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// ── Desert theme updates ──
+function updateDesert(dt) {
+  // Sandstorms drift
+  for (const ss of sandstorms) {
+    ss.x += ss.speed * dt;
+    if (ss.x > WORLD_W + ss.w) ss.x = -ss.w;
+  }
+  // Mirages shimmer
+  for (const m of mirages) {
+    m.shimmer += dt * 3;
+  }
+}
+
+function drawDesertEffects(startX, endX) {
+  // Pyramids
+  for (const p of pyramids) {
+    if (p.x - p.w / 2 > endX || p.x + p.w / 2 < startX) continue;
+    const ty = getTerrainY(p.x);
+    neonGlow(ctx, '#da0', 6);
+    ctx.fillStyle = 'rgba(200, 160, 0, 0.15)';
+    ctx.strokeStyle = '#da0';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(p.x - p.w / 2, ty);
+    ctx.lineTo(p.x, ty - p.h);
+    ctx.lineTo(p.x + p.w / 2, ty);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    clearGlow(ctx);
+  }
+
+  // Sandstorms
+  for (const ss of sandstorms) {
+    if (ss.x + ss.w < startX || ss.x > endX) continue;
+    ctx.fillStyle = `rgba(180, 150, 80, ${ss.opacity * 0.3})`;
+    const now = Date.now();
+    for (let y = camY; y < camY + canvas.height; y += 20) {
+      const wx = ss.x + Math.sin(y * 0.02 + now * 0.003) * 30;
+      ctx.fillRect(wx, y, ss.w, 8);
+    }
+  }
+
+  // Mirages — shimmering fake planes that vanish
+  for (const m of mirages) {
+    if (!m.alive) continue;
+    if (m.x < startX - 50 || m.x > endX + 50) continue;
+    const alpha = 0.15 + Math.sin(m.shimmer) * 0.1;
+    ctx.globalAlpha = alpha;
+    drawBiplane(ctx, m.x, m.y + Math.sin(m.shimmer * 0.7) * 5, 0, false, '#fa0', 1);
+    ctx.globalAlpha = 1;
+    // If player shoots near mirage, it vanishes
+    for (const b of bullets) {
+      if (b.friendly && Math.abs(b.x - m.x) < 30 && Math.abs(b.y - m.y) < 20) {
+        m.alive = false;
+        // Shimmer dissolve particles
+        for (let i = 0; i < 8; i++) {
+          addParticle(m.x + (Math.random() - 0.5) * 20, m.y + (Math.random() - 0.5) * 15,
+            (Math.random() - 0.5) * 40, -20 - Math.random() * 20, 0.5, '#fa0', 1);
+        }
+      }
+    }
+  }
+}
+
+// ── City theme updates ──
+function updateCity(dt) {
+  // Searchlights sweep
+  for (const sl of searchlightBeams) {
+    sl.angle += sl.speed * dt;
+    // If beam hits player, enemies get accuracy boost
+    const beamEndX = sl.x + Math.cos(sl.angle) * sl.range;
+    const beamEndY = sl.y + Math.sin(sl.angle) * sl.range;
+    if (Math.abs(player.x - beamEndX) < 40 && Math.abs(player.y - beamEndY) < 40) {
+      enemyAccuracyDebuff = -0.5; // negative = accuracy BOOST for enemies
+    }
+  }
+
+  // City building collision with player
+  if (!player.landed && !player.burning && player.invincible <= 0) {
+    for (const cb of cityBuildings) {
+      if (!cb.alive) continue;
+      if (player.x > cb.x - 5 && player.x < cb.x + cb.w + 5 &&
+          player.y > cb.y - 5 && player.y < cb.y + cb.h + 5) {
+        cb.hp--;
+        if (cb.hp <= 0) {
+          cb.alive = false;
+          addExplosion(cb.x + cb.w / 2, cb.y + cb.h / 2, 40, true);
+          score += 200;
+          // Building crumble — lower terrain
+          for (let dx = 0; dx < cb.w; dx++) {
+            const ix = Math.floor(((cb.x + dx) % WORLD_W + WORLD_W) % WORLD_W);
+            if (ix >= 0 && ix < WORLD_W) terrain[ix] += cb.h * 0.3;
+          }
+        }
+        damagePlayer(2);
+        break;
+      }
+    }
+  }
+
+  // Bombs hit city buildings
+  for (let i = bombs.length - 1; i >= 0; i--) {
+    const b = bombs[i];
+    if (b.friendly === false) continue;
+    for (const cb of cityBuildings) {
+      if (!cb.alive) continue;
+      if (b.x > cb.x && b.x < cb.x + cb.w && b.y > cb.y && b.y < cb.y + cb.h) {
+        cb.hp -= 2;
+        if (cb.hp <= 0) {
+          cb.alive = false;
+          addExplosion(cb.x + cb.w / 2, cb.y + cb.h / 2, 40, true);
+          score += 200;
+          for (let dx = 0; dx < cb.w; dx++) {
+            const ix = Math.floor(((cb.x + dx) % WORLD_W + WORLD_W) % WORLD_W);
+            if (ix >= 0 && ix < WORLD_W) terrain[ix] += cb.h * 0.3;
+          }
+        }
+        bombs.splice(i, 1);
+        break;
+      }
+    }
+  }
+}
+
+function drawCityEffects(startX, endX) {
+  // Skyscrapers
+  for (const cb of cityBuildings) {
+    if (!cb.alive) continue;
+    if (cb.x + cb.w < startX || cb.x > endX) continue;
+
+    // Building body
+    ctx.fillStyle = 'rgba(30, 30, 50, 0.8)';
+    ctx.fillRect(cb.x, cb.y, cb.w, cb.h);
+
+    // Neon outline
+    neonGlow(ctx, cb.color, 4);
+    ctx.strokeStyle = cb.color;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cb.x, cb.y, cb.w, cb.h);
+    clearGlow(ctx);
+
+    // Windows
+    const winW = 4, winH = 6, winGap = 8;
+    for (let fy = 0; fy < cb.floors; fy++) {
+      for (let fx = 0; fx < 3; fx++) {
+        const wi = fy * 3 + fx;
+        if (cb.lit[wi]) {
+          const wx = cb.x + 5 + fx * (winW + winGap);
+          const wy = cb.y + 8 + fy * (winH + winGap);
+          ctx.fillStyle = `rgba(255, 220, 100, ${0.4 + Math.sin(Date.now() * 0.002 + wi) * 0.1})`;
+          ctx.fillRect(wx, wy, winW, winH);
+        }
+      }
+    }
+  }
+
+  // Searchlight beams
+  for (const sl of searchlightBeams) {
+    const endX2 = sl.x + Math.cos(sl.angle) * sl.range;
+    const endY = sl.y + Math.sin(sl.angle) * sl.range;
+    if (sl.x < startX - sl.range || sl.x > endX + sl.range) continue;
+
+    ctx.save();
+    const grad = ctx.createLinearGradient(sl.x, sl.y, endX2, endY);
+    grad.addColorStop(0, 'rgba(255, 255, 200, 0.3)');
+    grad.addColorStop(1, 'rgba(255, 255, 200, 0)');
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    ctx.moveTo(sl.x, sl.y);
+    ctx.lineTo(endX2, endY);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ── Space theme updates ──
+function updateSpace(dt) {
+  // Asteroids drift and rotate
+  for (const a of asteroids) {
+    a.x += a.vx * dt;
+    a.y += a.vy * dt;
+    a.rotation += a.rotSpeed * dt;
+    // Wrap
+    if (a.x < -50) a.x = WORLD_W + 50;
+    if (a.x > WORLD_W + 50) a.x = -50;
+    if (a.y < -50) a.y = canvas.height + 50;
+    if (a.y > canvas.height + 50) a.y = -50;
+
+    // Collision with player
+    if (!player.burning && player.invincible <= 0) {
+      if (Math.hypot(player.x - a.x, player.y - a.y) < a.r + 10) {
+        damagePlayer(1);
+        // Break asteroid
+        if (a.r > 12) {
+          a.r *= 0.6;
+          asteroids.push({
+            x: a.x, y: a.y, r: a.r,
+            vx: -a.vx + (Math.random() - 0.5) * 20,
+            vy: -a.vy + (Math.random() - 0.5) * 20,
+            rotation: Math.random() * Math.PI * 2,
+            rotSpeed: (Math.random() - 0.5) * 3
+          });
+        }
+        addExplosion(a.x, a.y, 10, false);
+      }
+    }
+
+    // Bullets destroy asteroids
+    for (let j = bullets.length - 1; j >= 0; j--) {
+      const b = bullets[j];
+      if (!b.friendly) continue;
+      if (Math.hypot(b.x - a.x, b.y - a.y) < a.r) {
+        bullets.splice(j, 1);
+        if (a.r > 12) {
+          a.r *= 0.6;
+          asteroids.push({
+            x: a.x, y: a.y, r: a.r,
+            vx: -a.vx + (Math.random() - 0.5) * 30,
+            vy: -a.vy + (Math.random() - 0.5) * 30,
+            rotation: Math.random() * Math.PI * 2,
+            rotSpeed: (Math.random() - 0.5) * 3
+          });
+          score += 50;
+        } else {
+          a.r = 0; // destroyed
+          score += 100;
+          addExplosion(a.x, a.y, 12, true);
+        }
+        break;
+      }
+    }
+  }
+  asteroids = asteroids.filter(a => a.r > 3);
+
+  // Space floaty controls — reduced gravity
+  if (!player.landed) {
+    // Slight momentum drift
+    player.x += (Math.random() - 0.5) * 0.3;
+  }
+}
+
+function drawSpaceEffects(startX, endX) {
+  // Deep space background — more stars, nebula colors
+  const now = Date.now();
+
+  // Nebula clouds
+  for (let i = 0; i < 3; i++) {
+    const colors = ['rgba(100, 0, 200, 0.04)', 'rgba(0, 50, 200, 0.03)', 'rgba(200, 0, 100, 0.03)'];
+    ctx.fillStyle = colors[i];
+    const nx = ((startX + endX) / 2 + Math.sin(i * 3.1) * 2000) - camX * 0.1;
+    const ny = canvas.height * 0.3 + i * 100;
+    ctx.beginPath();
+    ctx.ellipse(nx, ny, 400 + i * 100, 80, Math.sin(now * 0.0001 + i) * 0.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Asteroids
+  for (const a of asteroids) {
+    if (a.x < startX - a.r || a.x > endX + a.r) continue;
+    ctx.save();
+    ctx.translate(a.x, a.y);
+    ctx.rotate(a.rotation);
+    neonGlow(ctx, '#a0f', 4);
+    ctx.strokeStyle = '#a8a';
+    ctx.fillStyle = 'rgba(80, 60, 80, 0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let j = 0; j < 8; j++) {
+      const ang = (j / 8) * Math.PI * 2;
+      const r = a.r * (0.7 + Math.sin(j * 2.3 + a.x) * 0.3);
+      if (j === 0) ctx.moveTo(Math.cos(ang) * r, Math.sin(ang) * r);
+      else ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    clearGlow(ctx);
+    ctx.restore();
+  }
+
+  // Space platforms
+  for (const sp of spacePlatforms) {
+    if (sp.x + sp.w < startX || sp.x > endX) continue;
+    neonGlow(ctx, '#a0f', 6);
+    ctx.strokeStyle = '#c0f';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sp.x, sp.y - 3, sp.w, 6);
+    // Platform details
+    ctx.strokeStyle = '#80a';
+    ctx.lineWidth = 1;
+    for (let dx = 10; dx < sp.w; dx += 20) {
+      ctx.beginPath();
+      ctx.moveTo(sp.x + dx, sp.y + 3);
+      ctx.lineTo(sp.x + dx, sp.y + 15);
+      ctx.stroke();
+    }
+    clearGlow(ctx);
+  }
 }
 
 // ── Particle system ──
@@ -2199,6 +3439,17 @@ function update(dt) {
     if (curTheme === 'cave') { updateBats(dt); updateCaveTurrets(dt); }
     if (curTheme === 'normandy') { updateTanks(dt); updateBarrageBalloons(dt); }
     if (curTheme === 'forest') { updateAAGuns(dt); updateTrains(dt); }
+    if (curTheme === 'volcano') updateVolcano(dt);
+    if (curTheme === 'arctic') updateArctic(dt);
+    if (curTheme === 'desert') updateDesert(dt);
+    if (curTheme === 'city') updateCity(dt);
+    if (curTheme === 'space') updateSpace(dt);
+    // Cross-theme systems
+    updateWeather(dt);
+    updateWingmen(dt);
+    updateSupplyDrops(dt);
+    updateActiveSupply(dt);
+    checkNemesisEscape();
     // Player crashes into tanks/trains
     if (!player.landed && !player.burning && player.invincible <= 0) {
       for (const tank of tanks) {
@@ -2486,6 +3737,15 @@ function updatePlayer(dt) {
       const bvx = Math.cos(rad) * BULLET_SPEED + p.vx * 0.3;
       const bvy = Math.sin(rad) * BULLET_SPEED + p.vy * 0.3;
       bullets.push({ x: bx, y: by, vx: bvx, vy: bvy, life: 1.2, friendly: true });
+      // Twin guns supply: extra bullet spread
+      if (activeSupply && activeSupply.type === 'twin_guns') {
+        bullets.push({ x: bx, y: by - 5, vx: bvx, vy: bvy - 15, life: 1.2, friendly: true });
+        bullets.push({ x: bx, y: by + 5, vx: bvx, vy: bvy + 15, life: 1.2, friendly: true });
+      }
+      // Rear gunner: shoots backward too
+      if (activeSupply && activeSupply.type === 'rear_gunner') {
+        bullets.push({ x: p.x - Math.cos(rad) * 20, y: p.y - Math.sin(rad) * 20, vx: -bvx * 0.5, vy: -bvy * 0.5, life: 0.8, friendly: true });
+      }
       p.ammo--;
       p.fireCooldown = 0.08;
       playShoot();
@@ -2499,7 +3759,8 @@ function updatePlayer(dt) {
       bombKeyWasDown = true;
     } else {
       if (bombKeyWasDown && bombScopeActive) {
-        bombs.push({ x: p.x, y: p.y + 5, vx: p.vx * BOMB_VXFRAC, vy: p.vy + 20, life: 5, friendly: true });
+        const isNapalm = activeSupply && activeSupply.type === 'napalm';
+        bombs.push({ x: p.x, y: p.y + 5, vx: p.vx * BOMB_VXFRAC, vy: p.vy + 20, life: 5, friendly: true, isNapalm });
         p.bombCount--;
         p.bombCooldown = 0.4;
         playBombDrop();
@@ -2533,7 +3794,8 @@ function updatePlayer(dt) {
       const targetSpeed = PLANE_MIN_SPEED + p.accel + grav;
       if (p.speed < targetSpeed) p.speed++;
       else if (p.speed > targetSpeed) p.speed--;
-      if (p.speed > PLANE_MAX_SPEED) p.speed = PLANE_MAX_SPEED;
+      const maxSpd = (activeSupply && activeSupply.type === 'speed_boost') ? PLANE_MAX_SPEED + 3 : PLANE_MAX_SPEED;
+      if (p.speed > maxSpd) p.speed = maxSpd;
     }
 
     // With throttle applied, never drop below minimum flight speed (checked every frame)
@@ -2722,6 +3984,8 @@ let parachutes = [];
 function damagePlayer(amount) {
   if (player.invincible > 0 || player.burning || state !== ST.PLAYING) return;
   amount = amount || 1;
+  // Armor supply: halve incoming damage (minimum 1)
+  if (activeSupply && activeSupply.type === 'armor') amount = Math.max(1, Math.floor(amount / 2));
   player.hp -= amount;
   player.hitFlash = 0.3;
   player.invincible = 0.5; // brief i-frames after hit
@@ -2811,7 +4075,17 @@ function updateParachutes(dt) {
     if (p.y >= groundY - 5) {
       p.y = groundY - 5;
       p.landed = true;
-      p.landTimer = 2; // stay visible on ground briefly
+      p.landTimer = 8; // stay visible longer so player can rescue
+    }
+    // Wingman rescue: fly near a landed parachute to pick up a wingman
+    if (p.landed && !p.rescued && wingmen.length < MAX_WINGMEN && !player.burning) {
+      if (Math.abs(player.x - p.x) < 60 && Math.abs(player.y - p.y) < 40) {
+        p.rescued = true;
+        p.landTimer = 0.1; // vanish quickly
+        addWingman();
+        nemesisTaunt = { text: `WINGMAN RESCUED! (${wingmen.length}/${MAX_WINGMEN})`, timer: 2.5 };
+        score += 500;
+      }
     }
   }
 }
@@ -3145,13 +4419,30 @@ function updateBombs(dt) {
         }
         addExplosion(b.x, b.y, 10, false);
       } else {
-        addExplosion(b.x, b.y, 30, true);
+        const napalmRadius = b.isNapalm ? 80 : 40;
+        addExplosion(b.x, b.y, b.isNapalm ? 50 : 30, true);
+        // Napalm: wider area damage to enemies
+        if (b.isNapalm) {
+          for (const en of enemies) {
+            if (!en.alive) continue;
+            if (Math.abs(en.x - b.x) < 100 && Math.abs(en.y - b.y) < 80) {
+              en.hp -= 2;
+              if (en.hp <= 0) startEnemyBurn(en);
+            }
+          }
+          // Fire particles spread
+          for (let j = 0; j < 15; j++) {
+            addParticle(b.x + (Math.random() - 0.5) * 100, b.y + (Math.random() - 0.5) * 20,
+              (Math.random() - 0.5) * 80, -30 - Math.random() * 40, 0.8 + Math.random() * 0.5,
+              Math.random() < 0.5 ? '#f60' : '#f80', 3);
+          }
+        }
         // Crater (skip in base territory)
         if (!isInBaseTerritory(b.x)) {
-          for (let dx = -40; dx <= 40; dx++) {
+          for (let dx = -napalmRadius; dx <= napalmRadius; dx++) {
             const ix = Math.floor(((b.x + dx) % WORLD_W + WORLD_W) % WORLD_W);
             if (ix >= 0 && ix < WORLD_W) {
-              terrain[ix] += (40 - Math.abs(dx)) * 0.4;
+              terrain[ix] += (napalmRadius - Math.abs(dx)) * (b.isNapalm ? 0.2 : 0.4);
             }
           }
         }
@@ -3948,16 +5239,20 @@ function checkLevelComplete() {
   const theme = getLevelTheme(level);
   let complete = false;
 
-  if (theme === 'cloud') {
-    // Cloud: kill all enemy aircraft to complete
+  if (theme === 'cloud' || theme === 'space') {
+    // Air/space: kill all enemy aircraft to complete
     const aliveEnemies = enemies.filter(e => e.alive).length;
     complete = aliveEnemies === 0;
   } else {
     const targets = buildings.filter(b => b.isTarget && b.alive);
     // Theme-specific targets
-    const themeTgts = tanks.filter(t => t.alive).length +
+    let themeTgts = tanks.filter(t => t.alive).length +
       trains.filter(t => t.alive).length +
       aaGuns.filter(a => a.alive).length;
+    // City buildings count as targets too
+    if (theme === 'city') {
+      themeTgts += cityBuildings.filter(cb => cb.alive).length;
+    }
     complete = targets.length === 0 && themeTgts === 0;
   }
 
@@ -3965,6 +5260,20 @@ function checkLevelComplete() {
     state = ST.LEVEL_COMPLETE;
     levelTimer = 3;
     score += 1000 * level;
+    // Carrier landing bonus — if player lands at base within the timer
+    if (player.landed) {
+      const dist = Math.abs(player.x - baseX - BASE_WIDTH / 2);
+      if (dist < 200) {
+        const landingBonus = Math.max(0, 500 - Math.floor(dist * 2));
+        if (landingBonus > 400) {
+          nemesisTaunt = { text: `PERFECT LANDING! +${landingBonus}`, timer: 3 };
+          score += landingBonus;
+        } else if (landingBonus > 200) {
+          nemesisTaunt = { text: `GOOD LANDING +${landingBonus}`, timer: 2 };
+          score += landingBonus;
+        }
+      }
+    }
     // Bonus life (max 9)
     if (lives < 9) {
       lives++;
@@ -4082,7 +5391,7 @@ function draw() {
 
   // Home base (skip on cloud — no ground)
   const drawThemeNow = getLevelTheme(level);
-  if (drawThemeNow !== 'cloud') {
+  if (drawThemeNow !== 'cloud' && drawThemeNow !== 'space') {
     drawBase();
     drawSearchlights();
     drawEnemyBases();
@@ -4291,6 +5600,21 @@ function draw() {
   if (drawTheme === 'cave') { drawBats(); drawCaveTurrets(); }
   if (drawTheme === 'normandy') { drawTanks(); drawBarrageBalloons(); }
   if (drawTheme === 'forest') { drawAAGuns(); drawTrains(); }
+
+  // New theme effects
+  const dStartX = Math.max(0, Math.floor(camX) - 2);
+  const dEndX = Math.min(WORLD_W - 1, Math.floor(camX + W) + 2);
+  if (drawTheme === 'volcano') drawVolcanoEffects(dStartX, dEndX);
+  if (drawTheme === 'arctic') drawArcticEffects(dStartX, dEndX);
+  if (drawTheme === 'desert') drawDesertEffects(dStartX, dEndX);
+  if (drawTheme === 'city') drawCityEffects(dStartX, dEndX);
+  if (drawTheme === 'space') drawSpaceEffects(dStartX, dEndX);
+
+  // Wingmen
+  drawWingmen();
+
+  // Supply drops
+  drawSupplyDrops();
 
   // Bombs & Torpedoes
   for (const b of bombs) {
@@ -4598,6 +5922,43 @@ function draw() {
 
   ctx.restore();
 
+  // ── Weather overlay (screen-space) ──
+  if (state === ST.PLAYING || state === ST.LEVEL_COMPLETE) {
+    drawWeather(W, H);
+    drawCarrierLandingHUD(W, H);
+  }
+
+  // ── Nemesis taunt ──
+  if (nemesisTaunt && nemesisTaunt.timer > 0) {
+    nemesisTaunt.timer -= 0.016;
+    const alpha = Math.min(1, nemesisTaunt.timer / 0.5);
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    neonGlow(ctx, '#f0f', 10);
+    ctx.fillStyle = `rgba(255, 0, 255, ${alpha})`;
+    ctx.font = 'bold 16px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(nemesisTaunt.text, W / 2, 90);
+    clearGlow(ctx);
+    ctx.restore();
+    if (nemesisTaunt.timer <= 0) nemesisTaunt = null;
+  }
+
+  // ── Active supply indicator ──
+  if (activeSupply) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const colors = { twin_guns: '#f00', rear_gunner: '#fa0', armor: '#0af', napalm: '#f60', speed_boost: '#0f0' };
+    const col = colors[activeSupply.type] || '#ff0';
+    neonGlow(ctx, col, 6);
+    ctx.fillStyle = col;
+    ctx.font = '11px "Courier New", monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${activeSupply.type.replace(/_/g, ' ').toUpperCase()} ${Math.ceil(activeSupply.timer)}s`, W - 10, 25);
+    clearGlow(ctx);
+    ctx.restore();
+  }
+
   // ── Overlays ──
   if (state === ST.DYING) {
     ctx.fillStyle = `rgba(255, 50, 0, ${0.3 * (deathTimer / 2)})`;
@@ -4776,19 +6137,24 @@ function drawTerrain(W, H) {
   const tc = THEME_CONFIG[theme];
   const hasWater = tc.hasWater === true || tc.hasWater === 'partial';
 
-  // Cloud: no ground, just draw cloud layer and return
+  // Cloud/Space: no ground, just draw effects and return
   if (theme === 'cloud') {
     drawCloudTerrainLine(startX, endX, tc);
     return;
   }
+  if (theme === 'space') {
+    // Space has platforms but no filled terrain
+    return;
+  }
 
   // Filled terrain
+  const isLava = tc.hasWater === 'lava';
   ctx.fillStyle = tc.bg;
   ctx.beginPath();
   ctx.moveTo(startX, terrainBottom);
   for (let x = startX; x <= endX; x += 2) {
     let ty = terrain[x];
-    if (hasWater && ty >= waterLineY - 5) {
+    if ((hasWater || isLava) && ty >= (isLava ? lavaLineY : waterLineY) - 5) {
       ty += Math.sin(Date.now() * 0.003 + x * 0.02) * 2 + Math.sin(Date.now() * 0.005 + x * 0.04) * 1;
     }
     ctx.lineTo(x, ty);
@@ -4806,6 +6172,10 @@ function drawTerrain(W, H) {
     drawCaveTerrainLine(startX, endX, terrainBottom, tc);
   } else if (theme === 'forest') {
     drawForestTerrainLine(startX, endX, tc);
+  } else if (theme === 'volcano') {
+    drawVolcanoTerrainLine(startX, endX, tc);
+  } else if (theme === 'city') {
+    drawCityTerrainLine(startX, endX, tc);
   } else {
     drawStandardTerrainLine(startX, endX, tc);
   }
@@ -5066,13 +6436,72 @@ function drawForestTerrainLine(startX, endX, tc) {
   }
 }
 
+function drawVolcanoTerrainLine(startX, endX, tc) {
+  // Rocky terrain with red/orange glow
+  neonGlow(ctx, '#f60', 10);
+  ctx.strokeStyle = '#f40';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += 2) {
+    const ty = terrain[x];
+    const isLavaHere = ty >= lavaLineY - 5;
+    if (isLavaHere) {
+      const ly = lavaLineY + Math.sin(Date.now() * 0.002 + x * 0.01) * 3;
+      if (x === startX) ctx.moveTo(x, ly); else ctx.lineTo(x, ly);
+    } else {
+      if (x === startX) ctx.moveTo(x, ty); else ctx.lineTo(x, ty);
+    }
+  }
+  ctx.stroke();
+  clearGlow(ctx);
+
+  // Terrain edge glow (land parts)
+  ctx.strokeStyle = '#f80';
+  ctx.lineWidth = 1;
+  neonGlow(ctx, '#fa0', 6);
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += 2) {
+    if (terrain[x] < lavaLineY - 10) {
+      if (x === startX) ctx.moveTo(x, terrain[x]); else ctx.lineTo(x, terrain[x]);
+    } else {
+      ctx.moveTo(x, terrain[x]);
+    }
+  }
+  ctx.stroke();
+  clearGlow(ctx);
+}
+
+function drawCityTerrainLine(startX, endX, tc) {
+  neonGlow(ctx, tc.glow, 6);
+  ctx.strokeStyle = tc.terrainColor;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += 2) {
+    if (x === startX) ctx.moveTo(x, terrain[x]);
+    else ctx.lineTo(x, terrain[x]);
+  }
+  ctx.stroke();
+  // Road markings
+  ctx.strokeStyle = '#446';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([10, 10]);
+  ctx.beginPath();
+  for (let x = startX; x <= endX; x += 2) {
+    if (x === startX) ctx.moveTo(x, terrain[x] - 2);
+    else ctx.lineTo(x, terrain[x] - 2);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+  clearGlow(ctx);
+}
+
 // ── Ground crew state ──
 let groundCrewTimer = 0;
 let refuelStage = 0; // 0=refueling, 1=ready
 
 function drawBase() {
   const theme = getLevelTheme(level);
-  if (theme === 'sea' || theme === 'normandy') {
+  if (theme === 'sea' || theme === 'normandy' || theme === 'arctic') {
     drawCarrier();
     return;
   }
@@ -7321,6 +8750,9 @@ function handleInput() {
       lives = 5;
       earnedMedals = new Set();
       flightStats = { kills: 0, damageTaken: 0, valour: 0 };
+      wingmen = [];
+      aceNemesis = null;
+      activeSupply = null;
       initLevel();
       state = ST.PLAYING;
       if (touchStartBtn) touchStartBtn.classList.remove('visible');
@@ -7337,6 +8769,9 @@ function handleInput() {
       lives = 5;
       earnedMedals = new Set();
       flightStats = { kills: 0, damageTaken: 0, valour: 0 };
+      wingmen = [];
+      aceNemesis = null;
+      activeSupply = null;
       initLevel();
       state = ST.PLAYING;
       if (touchStartBtn) touchStartBtn.classList.remove('visible');
