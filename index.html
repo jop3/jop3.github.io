@@ -600,6 +600,13 @@ function generateSeaTerrain(groundBase) {
     }
   }
 
+  // Clear carrier area — force water around carrier so no islands overlap
+  const clearStart = baseX - 300;
+  const clearEnd = baseX + BASE_WIDTH + 300;
+  for (let x = Math.max(0, clearStart); x < Math.min(WORLD_W, clearEnd); x++) {
+    terrain[x] = waterLineY;
+  }
+
   // Carrier flat area at world center
   const carrierFlatStart = baseX - 80;
   const carrierFlatEnd = baseX + BASE_WIDTH + 80;
