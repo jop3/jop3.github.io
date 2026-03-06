@@ -1155,7 +1155,7 @@ function initPlayer() {
     orient: false,        // upside-down (true = inverted, like ob_orient in original Sopwith)
     stalled: false,       // in stall state
     // Derived velocity (for rendering/collision)
-    vx: isCloud ? PLANE_MAX_SPEED : 0,
+    vx: isAirStart ? PLANE_MAX_SPEED : 0,
     vy: 0,
     fuel: MAX_FUEL,
     ammo: MAX_AMMO,
