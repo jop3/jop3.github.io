@@ -1675,6 +1675,7 @@ function initLevel() {
   trains = [];
   supplyDrops = [];
   supplyDropTimer = 15 + Math.random() * 15;
+  birds = [];
   carrierLanding = null;
   lightningFlash = 0;
   lightningBolt = null;
@@ -2003,15 +2004,44 @@ function updateWingmen(dt) {
   for (let i = wingmen.length - 1; i >= 0; i--) {
     const w = wingmen[i];
     if (!w.alive) { wingmen.splice(i, 1); continue; }
-    // Follow player in formation
-    const targetX = player.x - 40 - i * 35;
-    const targetY = player.y + 20 + i * 15;
-    w.vx += (targetX - w.x) * 3 * dt;
-    w.vy += (targetY - w.y) * 3 * dt;
-    w.vx *= 0.95; w.vy *= 0.95;
+
+    // Formation offset: behind and slightly below player, accounting for flight direction
+    const flyingRight = COS_TABLE[player.angleIdx] >= 0;
+    const behindDir = flyingRight ? -1 : 1;
+    const slot = i + 1;
+    const targetX = player.x + behindDir * (35 + slot * 25);
+    let targetY = player.y + 15 + slot * 10;
+
+    // Keep above terrain
+    const groundY = getTerrainY(targetX);
+    if (targetY > groundY - 15) targetY = groundY - 15;
+
+    // Stronger spring + damping for snappy formation keeping
+    const stiffness = 8;
+    const damping = 0.88;
+    w.vx += (targetX - w.x) * stiffness * dt;
+    w.vy += (targetY - w.y) * stiffness * dt;
+    w.vx *= damping; w.vy *= damping;
     w.x += w.vx * dt * 60;
     w.y += w.vy * dt * 60;
-    w.angleIdx = player.angleIdx;
+
+    // Keep wingman above terrain at current position too
+    const wGround = getTerrainY(w.x);
+    if (w.y > wGround - 12) { w.y = wGround - 12; w.vy = Math.min(w.vy, 0); }
+
+    // Face the direction of travel (not just copy player)
+    const wSpeed = Math.sqrt(w.vx * w.vx + w.vy * w.vy);
+    if (wSpeed > 0.5) {
+      const moveAngle = Math.atan2(-w.vy, w.vx); // negate vy for screen coords
+      let bestIdx = 0, bestDot = -999;
+      for (let a = 0; a < NUM_ANGLES; a++) {
+        const dot = COS_TABLE[a] * Math.cos(moveAngle) + SIN_TABLE[a] * Math.sin(moveAngle);
+        if (dot > bestDot) { bestDot = dot; bestIdx = a; }
+      }
+      w.angleIdx = bestIdx;
+    } else {
+      w.angleIdx = player.angleIdx;
+    }
 
     // Fire at nearby enemies
     w.fireTimer -= dt;
@@ -3566,51 +3596,84 @@ function updatePlayer(dt) {
   const p = player;
   p.moveCount++;
 
-  // ── Autopilot: tractor beam guided landing ──
+  // ── Autopilot: AI-assisted fly-home + tractor beam landing ──
+  // Not available on cloud/space themes (no ground base)
+  if (p.autopilot && (getLevelTheme(level) === 'cloud' || getLevelTheme(level) === 'space')) {
+    p.autopilot = false;
+  }
   if (p.autopilot) {
     const homeX = baseX + BASE_WIDTH / 2;
     const homeY = getTerrainY(homeX) - 8;
     const dx = homeX - p.x;
-    const dy = homeY - p.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    const CAPTURE_RADIUS = 400; // matches searchlight range
+    const dist = Math.abs(dx);
+    const CAPTURE_RADIUS = 400;
 
-    // Too far — cancel autopilot so player retains control
+    // Helper: steer angleIdx toward target (shortest path around 16-angle ring)
+    const steerToward = (target) => {
+      if (p.angleIdx === target) return;
+      const diff = ((target - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
+      if (diff <= 8) p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
+      else p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
+    };
+
     if (dist > CAPTURE_RADIUS) {
-      p.autopilot = false;
-    }
-    // Within capture range: tractor beam pulls plane in
-    else {
+      // ── Phase 1: Fly toward base ──
       p.orient = false;
       p.stalled = false;
-      // Smoothly interpolate position toward the runway
-      const lerpRate = 0.02 * (60 * dt);  // ~2% per frame at 60fps
+
+      // Maintain throttle
+      if (p.accel < 2) p.accel = 2;
+      if (p.speed < PLANE_MIN_SPEED) p.speed = PLANE_MIN_SPEED;
+
+      // Safe altitude: stay 80px above terrain ahead
+      const lookAhead = dx > 0 ? 120 : -120;
+      const terrainAhead = getTerrainY(p.x + lookAhead);
+      const safeY = terrainAhead - 80;
+
+      // Determine desired heading: toward base, with altitude correction
+      let targetAngle;
+      if (p.y > safeY + 30) {
+        // Too low — climb
+        targetAngle = dx > 0 ? 2 : 6;  // climb-right or climb-left
+      } else if (p.y < safeY - 60) {
+        // Too high — descend gently
+        targetAngle = dx > 0 ? 14 : 10; // descend-right or descend-left
+      } else {
+        // Good altitude — fly level toward base
+        targetAngle = dx > 0 ? 0 : 8;
+      }
+
+      // Steer every 2 frames for smooth turning
+      if (p.moveCount % 2 === 0) steerToward(targetAngle);
+
+      // Fall through to normal physics below (no return)
+    } else {
+      // ── Phase 2: Tractor beam capture for landing ──
+      p.orient = false;
+      p.stalled = false;
+      const lerpRate = 0.02 * (60 * dt);
       p.x += (homeX - p.x) * lerpRate;
       p.y += (homeY - p.y) * lerpRate;
 
-      // Smoothly level the plane
-      const targetAngle = dx > 0 ? 0 : 8;
-      if (p.angleIdx !== targetAngle && p.moveCount % 3 === 0) {
-        const diff = ((targetAngle - p.angleIdx) + NUM_ANGLES) % NUM_ANGLES;
-        if (diff <= 8) p.angleIdx = (p.angleIdx + 1) % NUM_ANGLES;
-        else p.angleIdx = ((p.angleIdx - 1) + NUM_ANGLES) % NUM_ANGLES;
-      }
+      // Ensure we never go below terrain during beam
+      const groundHere = getTerrainY(p.x);
+      if (p.y > groundHere - 10) p.y = groundHere - 10;
 
-      // Reduce speed and zero velocity (beam controls position)
+      const targetAngle = dx > 0 ? 0 : 8;
+      if (p.moveCount % 3 === 0) steerToward(targetAngle);
+
       p.speed = Math.max(0, p.speed - 0.5);
       p.accel = 0;
       p.vx = 0;
       p.vy = 0;
 
-      // Timers still tick
       p.fireCooldown -= dt;
       p.bombCooldown -= dt;
       p.depthChargeCooldown -= dt;
       if (p.invincible > 0) p.invincible -= dt;
-      p.fuel -= dt * 5; // minimal fuel use during beam approach
+      p.fuel -= dt * 5;
       if (p.fuel <= 0) p.fuel = 0;
 
-      // Landing: close enough to runway
       const landDist = Math.sqrt((p.x - homeX) ** 2 + (p.y - homeY) ** 2);
       if (landDist < 15) {
         p.landed = true;
@@ -3620,9 +3683,9 @@ function updatePlayer(dt) {
         p.x = homeX; p.y = homeY;
         p.fuel = MAX_FUEL; p.ammo = MAX_AMMO; p.bombCount = MAX_BOMBS;
         p.depthCharges = MAX_DEPTH_CHARGES;
-        p.hp = PLAYER_MAX_HP; p.wounded = false; // Repair on landing
+        p.hp = PLAYER_MAX_HP; p.wounded = false;
       }
-      return; // Skip normal physics — beam handles everything
+      return; // Beam controls position — skip normal physics
     }
   }
 
@@ -8751,7 +8814,7 @@ function handleInput() {
     keys['Enter'] = false;
     if (state === ST.TITLE || state === ST.GAME_OVER) {
       initAudio();
-      shuffleThemes();
+      if (!window.__TEST || !window.__TEST._themeOrderLocked) shuffleThemes();
       level = 1;
       score = 0;
       lives = 5;
@@ -8808,6 +8871,79 @@ function updateEngineSound() {
   }
 }
 setInterval(updateEngineSound, 50);
+
+// ── Test hook — exposes game internals for Playwright tests ──
+window.__TEST = {
+  // State
+  get state() { return state; },
+  set state(v) { state = v; },
+  get level() { return level; },
+  set level(v) { level = v; },
+  get score() { return score; },
+  get lives() { return lives; },
+  get player() { return player; },
+  get enemies() { return enemies; },
+  get buildings() { return buildings; },
+  get terrain() { return terrain; },
+  get weather() { return weather; },
+  get wingmen() { return wingmen; },
+  get aceNemesis() { return aceNemesis; },
+  get supplyDrops() { return supplyDrops; },
+  get activeSupply() { return activeSupply; },
+  get tanks() { return tanks; },
+  get trains() { return trains; },
+  get aaGuns() { return aaGuns; },
+  get cityBuildings() { return cityBuildings; },
+  get asteroids() { return asteroids; },
+  get lavaGeysers() { return lavaGeysers; },
+  get sandstorms() { return sandstorms; },
+  get mirages() { return mirages; },
+  get pyramids() { return pyramids; },
+  get parachutes() { return parachutes; },
+  get bombs() { return bombs; },
+  get bullets() { return bullets; },
+  // Constants
+  ST, THEMES, THEME_CONFIG, WORLD_W, PLAYER_MAX_HP, MAX_FUEL,
+  // Functions
+  initLevel, initPlayer, generateTerrain, checkLevelComplete,
+  getLevelTheme, getThemeConfig, getTerrainY, getCeilingY, getCanopyY,
+  spawnEnemies, spawnBuildings, addWingman, activateSupply,
+  damagePlayer, startEnemyBurn, killEnemy, checkNemesisEscape,
+  shuffleThemes, initWeather,
+  // Theme control for tests
+  setThemeOrder(order) { shuffledThemes = order; this._themeOrderLocked = true; },
+  getThemeOrder() { return [...shuffledThemes]; },
+  // Simulate N frames
+  tick(n = 1, dt = 1/60) {
+    for (let i = 0; i < n; i++) {
+      if (state === ST.PLAYING) {
+        updatePlayer(dt);
+        updateBullets(dt);
+        updateBombs(dt);
+        updateEnemies(dt);
+        updateWeather(dt);
+        updateWingmen(dt);
+        updateSupplyDrops(dt);
+        updateActiveSupply(dt);
+        updateParticles(dt);
+        checkNemesisEscape();
+        checkLevelComplete();
+      }
+    }
+  },
+  // Press a key for N ticks
+  pressKey(code, ticks = 1) {
+    keys[code] = true;
+    this.tick(ticks);
+    keys[code] = false;
+  },
+  // Start a new game
+  startGame() {
+    keys['Enter'] = true;
+    handleInput();
+    keys['Enter'] = false;
+  }
+};
 
 // ── Start ──
 particles = [];
